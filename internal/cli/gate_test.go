@@ -68,3 +68,13 @@ func TestTheNudgeNamesTheDaysWaiting(t *testing.T) {
 		t.Fatalf("a confirmed day is not waiting: %q", out)
 	}
 }
+
+func TestAMissedDayStaysWaitingForWeeks(t *testing.T) {
+	h := newHarness(t)
+	h.prompt(9, 0, h.repo) // Tue 10 Nov
+	h.now = time.Date(2027, 1, 8, 9, 0, 0, 0, time.Local)
+	_, out, _ := h.run("", "status", "--hook")
+	if !strings.Contains(out, "1 day waiting for review, from 2026-11-10") {
+		t.Fatalf("a day 59 days back is still waiting: %q", out)
+	}
+}

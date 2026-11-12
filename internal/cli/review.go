@@ -16,7 +16,8 @@ import (
 )
 
 // lookback is how far back sift looks for days still waiting for review.
-const lookback = 14
+// Ninety days of a heavy log (300 prompts a day) reads in about 90 ms.
+const lookback = 90
 
 // source is the review screen's view of the CLI's data.
 type source struct{ r *run }
