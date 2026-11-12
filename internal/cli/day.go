@@ -127,9 +127,16 @@ func (r *run) load(date string) (Loaded, error) {
 			l.Events = append(l.Events, e)
 		}
 	}
-	l.Day = derive.For(start, in, nil, derive.Settings{IdleGap: cfg.IdleGap, Tail: derive.Defaults.Tail, EventsWin: cfg.EventsWin})
 	l.Decisions, err = l.Store.Load(start.Format("2006-01-02"))
-	return l, err
+	if err != nil {
+		return l, err
+	}
+	set := derive.Settings{IdleGap: cfg.IdleGap, Tail: derive.Defaults.Tail, EventsWin: cfg.EventsWin}
+	for _, b := range l.Decisions.Blocks {
+		set.Blocks = append(set.Blocks, derive.Block{From: b.From, To: b.To, Ticket: b.Ticket})
+	}
+	l.Day = derive.For(start, in, nil, set)
+	return l, nil
 }
 
 func (r *run) draft(args []string) (any, func(io.Writer), error) {

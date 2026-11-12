@@ -209,3 +209,27 @@ func TestABrokenConfigStillRecords(t *testing.T) {
 		t.Fatalf("the prompt was not recorded")
 	}
 }
+
+func TestABlockOwnsItsTime(t *testing.T) {
+	h := newHarness(t)
+	h.prompt(9, 0, h.repo)
+	h.prompt(9, 5, h.repo)
+	if code, out, _ := h.run("", "block", "OPS-77", "9:05-10:00", "--date", "2026-11-10"); code != 0 || !strings.Contains(out, "Added OPS-77 09:05–10:00 (55m)") {
+		t.Fatalf("exit %d: %q", code, out)
+	}
+	_, _, data := h.envelope("draft")
+	got := map[string]float64{}
+	for _, w := range data["worklogs"].([]any) {
+		w := w.(map[string]any)
+		got[w["ticket"].(string)] = w["minutes"].(float64)
+	}
+	if got["PUN-142"] != 5 || got["OPS-77"] != 55 {
+		t.Fatalf("worklogs %v; want PUN-142 5m (its tail is under the block), OPS-77 55m", got)
+	}
+	if code, _, _ := h.run("", "block", "ops-77", "09:05-10:00", "--remove", "--date", "2026-11-10"); code != 0 {
+		t.Fatalf("remove: exit %d", code)
+	}
+	if code, _, _ := h.run("", "block", "OPS-77", "10:00-09:00"); code != 64 {
+		t.Fatalf("a backwards block: exit %d", code)
+	}
+}

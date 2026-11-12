@@ -77,6 +77,7 @@ const usage = `sift: a terminal worklog drafter
   sift record [--cwd DIR] [--hook]   record an event: you were working here
   sift events [--date YYYY-MM-DD]    list a day's events
   sift draft  [--date YYYY-MM-DD]    the worklogs the day would produce
+  sift block KEY HH:MM-HH:MM         add time by hand (--remove takes it back)
   sift version
 
   --json (or SIFT_JSON=1) writes the result as a JSON envelope.
@@ -106,6 +107,7 @@ func Run(args []string, env Env) int {
 		"review":  r.review,
 		"status":  r.status,
 		"gate":    r.gate,
+		"block":   r.block,
 	}
 	cmd, ok := cmds[r.command]
 	if !ok {

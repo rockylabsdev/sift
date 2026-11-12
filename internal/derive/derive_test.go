@@ -57,6 +57,13 @@ func TestRules(t *testing.T) {
 		{"a wider idle gap joins more", []Event{ev(hm(9, 0), "A"), ev(hm(9, 14), "A")}, nil, Settings{IdleGap: 15, Tail: 5},
 			map[string]int{"A": 19}, Unassigned{}, 1},
 		{"no events, no meetings", nil, nil, Defaults, map[string]int{}, Unassigned{}, 0},
+		{"a block owns its minutes ahead of a meeting and evidence",
+			[]Event{ev(hm(9, 0), "A"), ev(hm(9, 5), "A")},
+			[]Meeting{{hm(9, 30), hm(10, 0), "planning"}},
+			Settings{IdleGap: 10, Tail: 5, Blocks: []Block{{hm(9, 5), hm(9, 45), "B"}}},
+			map[string]int{"A": 5, "B": 40}, Unassigned{Meetings: 15}, 2},
+		{"a block alone", nil, nil, Settings{IdleGap: 10, Tail: 5, Blocks: []Block{{hm(14, 0), hm(15, 30), "C"}}},
+			map[string]int{"C": 90}, Unassigned{}, 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -126,6 +133,10 @@ func TestInvariants(t *testing.T) {
 		start := starts[n%len(starts)]
 		events, meetings := randomDay(r, start)
 		s := Settings{IdleGap: 1 + r.Intn(30), Tail: r.Intn(10), EventsWin: r.Intn(2) == 0}
+		for b := r.Intn(3); b > 0; b-- {
+			from := start.Add(time.Duration(r.Intn(24*60)) * time.Minute)
+			s.Blocks = append(s.Blocks, Block{from, from.Add(time.Duration(r.Intn(180)) * time.Minute), "B"})
+		}
 		d := For(start, events, meetings, s)
 
 		dayLen := int(d.End.Sub(d.Start) / time.Minute)

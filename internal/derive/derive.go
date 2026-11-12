@@ -22,11 +22,19 @@ type Meeting struct {
 	Title    string
 }
 
+// Block is time the user gave a ticket by hand, for work no collector
+// saw. It owns its minutes ahead of evidence and meetings.
+type Block struct {
+	From, To time.Time
+	Ticket   string
+}
+
 // Settings are the rules' knobs.
 type Settings struct {
 	IdleGap   int  // longest silence, in minutes, that still joins two events
 	Tail      int  // minutes credited after a stretch's last event
 	EventsWin bool // an event during a meeting beats the meeting
+	Blocks    []Block
 }
 
 // Defaults are the rules as prototyped.
@@ -170,6 +178,15 @@ func For(start time.Time, events []Event, meetings []Meeting, s Settings) Day {
 	}
 	for k, m := range meetings {
 		fill(idx(m.From), idx(m.To), meet0-k, s.EventsWin)
+	}
+	for _, b := range s.Blocks {
+		k, ok := key[b.Ticket]
+		if !ok {
+			k = len(keys)
+			key[b.Ticket] = k
+			keys = append(keys, b.Ticket)
+		}
+		fill(idx(b.From), idx(b.To), k, false)
 	}
 	if len(evs) > 0 {
 		first, last := evs[0].i, evs[len(evs)-1].i
