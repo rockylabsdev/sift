@@ -6,14 +6,31 @@ Sift records evidence as you work, derives your day from it, and drafts one work
 ## Install
 
 ```sh
-go install ./cmd/sift
+brew install rockylabsdev/tap/sift
 claude plugin marketplace add rockylabsdev/sift
 claude plugin install sift@sift
 ```
 
+The plugin is pinned to the release of the binary, so update both together: `brew upgrade sift`, then `claude plugin update sift@sift`. Without Homebrew, `go install github.com/rockylabsdev/sift/cmd/sift@latest` works too.
+
 Each prompt you type in Claude Code is now an event for the ticket its directory names: a `.sift` file (first line, e.g. `PUN-142`), else the branch name. An agent's own activity is never counted.
 
 Try it before any of that with `sift demo`, which opens the review on a seeded fake day and keeps nothing.
+
+## Test a checkout
+
+```sh
+scripts/sandbox.sh                # a shell with this checkout's sift and plugin, and throwaway data
+scripts/sandbox.sh sift demo      # or one command
+SIFT_SANDBOX=~/sift-try scripts/sandbox.sh   # keep the sandbox between runs
+go test ./...
+```
+
+Inside the sandbox, `claude` loads this checkout's plugin, and `sift setup jira` or `sift setup calendar` connect real accounts without touching your everyday config. Secrets still go to the Keychain on macOS, under names that do not clash.
+
+## Release
+
+`scripts/release.sh 0.2.0` (or `0.2.0-rc.1` for a pre-release that skips the tap) pins the plugin to the tag, commits and tags on `main`. Pushing the tag runs CI, then GoReleaser publishes the tarballs and the Homebrew formula. It needs a `rockylabsdev/homebrew-tap` repository and a `HOMEBREW_TAP_GITHUB_TOKEN` secret: a fine-grained token with Contents read and write on that repository only.
 
 ## Use
 

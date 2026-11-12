@@ -1,3 +1,4 @@
 .verify/
 /prototype-daystrip
 .claude/worktrees/
+dist/
