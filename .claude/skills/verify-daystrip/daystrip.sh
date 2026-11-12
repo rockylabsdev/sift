@@ -45,7 +45,7 @@ start)
     "env TERM=xterm-256color COLORTERM=truecolor '$SCRATCH/daystrip'; echo '[daystrip exited' \$?']'; sleep 86400"
   for i in $(seq 1 100); do
     s=$(plain)
-    if grep -q 'day · Tue 10 Nov' <<<"$s" || grep -q 'PROTOTYPE: needs' <<<"$s"; then break; fi
+    if grep -q 'Tue 10 Nov · draft' <<<"$s" || grep -q 'PROTOTYPE: needs' <<<"$s"; then break; fi
     sleep 0.1
   done
   settle
@@ -65,7 +65,7 @@ doctor)
   elif [ "$built" = "$now" ]; then echo "warn build $built: source has uncommitted edits; restart after further edits"
   else echo "FAIL build $built != checkout $now: stop and start again"; ok=0; fi
   echo "info size $(T display -p -t app '#{window_width}x#{window_height}')"
-  if plain | grep -q 'day · Tue 10 Nov'; then echo "ok   main screen drawn"
+  if plain | grep -q 'Tue 10 Nov · draft'; then echo "ok   main screen drawn"
   elif plain | grep -q 'PROTOTYPE: needs'; then echo "warn size guard shown (needs 96x30+)"
   else echo "FAIL neither main screen nor size guard on screen"; ok=0; fi
   [ $ok = 1 ]

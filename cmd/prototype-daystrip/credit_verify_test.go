@@ -99,11 +99,11 @@ func parseDur(s string) (int, error) {
 // column adds up to the total printed under it (the promise in stretchBox's
 // comment). It reads the rendered box, so it checks what the user sees.
 func checkColumns(m model) error {
-	const w, cw = 200, 9
+	const w = 200
 	h := len(m.segments) + 10 // tall enough that no row scrolls away
 	lines := m.stretchBox(w, h)
 	iw := w - 2
-	whatW := iw - 1 - 11 - 3 - cw*(len(tickets)+1) - 1
+	whatW, cw, _ := stretchCols(iw)
 	start := 1 + 1 + 11 + 3 + whatW // box edge, then the row's fixed prefix
 	cells := func(line string) ([]int, error) {
 		r := []rune(ansi.Strip(line))
