@@ -278,19 +278,39 @@ func (m model) ownedIn(t, from, to int) (n int) {
 	return n
 }
 
-func (m model) total(t int) int {
-	n := m.d.minutesOf(t) + m.adjust[t]
-	for i, to := range m.meetTo {
-		if to == t {
-			n += meetings[i].to - meetings[i].from
+// counted is the minutes the day strip credits to ticket t: one owner per
+// minute, so overlapping meetings can never count twice.
+func (m model) counted(t int) int { return m.countedAll()[t] }
+
+// countedAll is counted for every ticket in one pass over the day.
+func (m model) countedAll() []int {
+	n := make([]int, len(tickets))
+	for mm := range dayMinutes {
+		if o := m.eff(mm); isTicket(o) {
+			n[o]++
 		}
 	}
-	for i, to := range m.gapTo {
-		if to == t {
-			n += m.d.gaps[i].to - m.d.gaps[i].from
-		}
+	return n
+}
+
+func (m model) total(t int) int { return m.totals()[t] }
+
+// totals is every ticket's draft total: counted plus adjustment, floored.
+func (m model) totals() []int {
+	n := m.countedAll()
+	for t := range n {
+		n[t] = max(n[t]+m.adjust[t], 0)
 	}
-	return max(n, 0)
+	return n
+}
+
+// byHand is what each hand adjustment actually changed, after the floor.
+func (m model) byHand() []int {
+	n := m.countedAll()
+	for t := range n {
+		n[t] = max(n[t]+m.adjust[t], 0) - n[t]
+	}
+	return n
 }
 
 func (m model) Init() tea.Cmd { return nil }
@@ -330,7 +350,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "-":
 			if isTicket(o) {
-				m.adjust[o] -= 5
+				m.adjust[o] = max(m.adjust[o]-5, -m.counted(o))
 			}
 		case "t", "enter":
 			switch {
@@ -414,6 +434,13 @@ func dur(n int) string {
 		return fmt.Sprintf("%dm", n)
 	}
 	return fmt.Sprintf("%dh %02dm", n/60, n%60)
+}
+
+func signed(n int) string {
+	if n < 0 {
+		return "-" + dur(-n)
+	}
+	return "+" + dur(n)
 }
 
 func clock(m int) string { return fmt.Sprintf("%02d:%02d", (m+dayStart)/60, (m+dayStart)%60) }
@@ -770,7 +797,12 @@ func (m model) stretchBox(w, h int) []string {
 		}
 		rows = append(rows, row)
 	}
+	tot := m.totals()
+	handRow := m.handRow(m.byHand(), cw, whatW, lastW)
 	room := h - 2 - 6 // header, rule, total, blank, two detail lines
+	if handRow != "" {
+		room--
+	}
 	first := max(m.cur-room+1, 0)
 	rows = rows[first:]
 	more := 0
@@ -779,9 +811,12 @@ func (m model) stretchBox(w, h int) []string {
 		rows = rows[:room]
 	}
 	body = append(body, rows...)
+	if handRow != "" {
+		body = append(body, handRow)
+	}
 	foot := " " + fg(p.dim, fmt.Sprintf("%-11s", "total")) + "   " + pad("", whatW)
 	for t := range tickets {
-		foot += bold(p.hue[t], fmt.Sprintf("%*s", cw, dur(m.total(t))))
+		foot += bold(p.hue[t], fmt.Sprintf("%*s", cw, dur(tot[t])))
 	}
 	foot += bold(p.amber, fmt.Sprintf("%*s", lastW, dur(offSum)))
 	rule := " " + fg(p.faint, strings.Repeat("─", iw-2))
@@ -797,6 +832,25 @@ func (m model) stretchBox(w, h int) []string {
 	body = append(body, " "+t, " "+dt)
 	right := fg(p.dim, fmt.Sprintf("%d of %d", m.cur+1, len(m.segments)))
 	return box(2, "stretches", right, m.events == 0, w, h, body)
+}
+
+// handRow is the stretch table's row for hand adjustments, so each column
+// still adds up to its total. Empty when nothing was adjusted.
+func (m model) handRow(hand []int, cw, whatW, lastW int) string {
+	row, some := " "+fg(p.amber, fmt.Sprintf("%-11s", "by hand"))+"   "+pad("", whatW), false
+	for t := range tickets {
+		n := hand[t]
+		cell := fg(p.faint, fmt.Sprintf("%*s", cw, "·"))
+		if n != 0 {
+			some = true
+			cell = fg(p.amber, fmt.Sprintf("%*s", cw, signed(n)))
+		}
+		row += cell
+	}
+	if !some {
+		return ""
+	}
+	return row + fg(p.faint, fmt.Sprintf("%*s", lastW, "·"))
 }
 
 // --- events: the audit view ---
@@ -982,11 +1036,12 @@ func (m model) draftBox(w, h int) []string {
 	line := func(left, right string) string { return " " + spread(left, right, iw-2) }
 	meetOff, gapOff := m.unassigned()
 	ruled := h-2 >= len(tickets)*3+3
+	hand := m.byHand()
 	var body []string
 	for t, tk := range tickets {
 		key := bold(p.hue[t], tk.key)
-		if m.adjust[t] != 0 {
-			key += fg(p.amber, fmt.Sprintf("  %+dm by hand", m.adjust[t]))
+		if n := hand[t]; n != 0 {
+			key += fg(p.amber, "  "+signed(n)+" by hand")
 		}
 		body = append(body, line(key, bold(p.text, dur(m.total(t)))), " "+fg(p.muted, tk.summary))
 		if ruled {
