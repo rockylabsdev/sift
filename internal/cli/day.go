@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rockylabsdev/sift/internal/derive"
+	"github.com/rockylabsdev/sift/internal/draft"
 	"github.com/rockylabsdev/sift/internal/evidence"
 )
 
@@ -84,30 +85,51 @@ func nonNil[T any](xs []T) []T {
 	return xs
 }
 
-// Worklog is one ticket's draft worklog for the day.
-type Worklog struct {
-	Ticket  string    `json:"ticket"`
-	Minutes int       `json:"minutes"`
-	Counted int       `json:"counted"` // before rounding
-	Started time.Time `json:"started"`
+// Loaded is one day, read and derived, with the user's decisions.
+type Loaded struct {
+	Start     time.Time
+	Events    []evidence.Event // the day's own events
+	Day       derive.Day
+	Decisions draft.Decisions
+	Config    Config
+	Store     draft.Store
 }
 
-// Draft is what a day would send.
+// Draft is the CLI's view of a day's draft.
 type Draft struct {
-	Date       string            `json:"date"`
-	Worklogs   []Worklog         `json:"worklogs"`
-	Total      int               `json:"total"`
-	Unassigned derive.Unassigned `json:"unassigned"`
-	Stretches  []derive.Stretch  `json:"stretches"`
-	Meetings   string            `json:"meetings"` // where meetings came from
-	Settings   Config            `json:"settings"`
+	draft.Draft
+	Stretches []derive.Stretch `json:"stretches"`
+	Meetings  string           `json:"meetings"` // where meetings came from
+	Settings  Config           `json:"settings"`
 }
 
-func round(n, to int) int {
-	if to == 0 {
-		return n
+// load reads, derives and decides the day date ("" for today).
+func (r *run) load(date string) (Loaded, error) {
+	var l Loaded
+	cfg, err := r.config()
+	if err != nil {
+		return l, err
 	}
-	return (n + to/2) / to * to
+	start, events, err := r.day(date)
+	if err != nil {
+		return l, err
+	}
+	dir, _ := r.dataDir()
+	l = Loaded{Start: start, Config: cfg, Store: draft.Store{Dir: dir}}
+	var in []derive.Event
+	for _, e := range events {
+		k := ""
+		if e.Ticket != nil {
+			k = *e.Ticket
+		}
+		in = append(in, derive.Event{At: e.At, Ticket: k})
+		if inDay(start, e.At) {
+			l.Events = append(l.Events, e)
+		}
+	}
+	l.Day = derive.For(start, in, nil, derive.Settings{IdleGap: cfg.IdleGap, Tail: derive.Defaults.Tail, EventsWin: cfg.EventsWin})
+	l.Decisions, err = l.Store.Load(start.Format("2006-01-02"))
+	return l, err
 }
 
 func (r *run) draft(args []string) (any, func(io.Writer), error) {
@@ -122,36 +144,15 @@ func (r *run) draft(args []string) (any, func(io.Writer), error) {
 	if md && r.jsonFlag {
 		return nil, nil, usageError{"--md and --json are two formats; pick one"}
 	}
-	cfg, err := r.config()
+	l, err := r.load(date)
 	if err != nil {
 		return nil, nil, err
 	}
-	start, events, err := r.day(date)
-	if err != nil {
-		return nil, nil, err
-	}
-	var in []derive.Event
-	for _, e := range events {
-		k := ""
-		if e.Ticket != nil {
-			k = *e.Ticket
-		}
-		in = append(in, derive.Event{At: e.At, Ticket: k})
-	}
-	d := derive.For(start, in, nil, derive.Settings{IdleGap: cfg.IdleGap, Tail: derive.Defaults.Tail, EventsWin: cfg.EventsWin})
-	dr := Draft{Date: start.Format("2006-01-02"), Unassigned: d.Unassigned, Stretches: nonNil(d.Stretches), Meetings: "no calendar connected", Settings: cfg}
-	for _, t := range d.Totals {
-		w := Worklog{Ticket: t.Ticket, Minutes: round(t.Minutes, cfg.Round), Counted: t.Minutes, Started: t.First}
-		if w.Minutes >= 1 {
-			dr.Worklogs = append(dr.Worklogs, w)
-			dr.Total += w.Minutes
-		}
-	}
-	dr.Worklogs = nonNil(dr.Worklogs)
+	dr := Draft{Draft: draft.Of(l.Day, l.Decisions, l.Config.Round), Stretches: nonNil(l.Day.Stretches), Meetings: "no calendar connected", Settings: l.Config}
 	if md {
 		r.json = false
 	}
-	return dr, func(w io.Writer) { writeDraft(w, dr, start.Location(), md) }, nil
+	return dr, func(w io.Writer) { writeDraft(w, dr, l.Start.Location(), md) }, nil
 }
 
 func dur(n int) string {
@@ -179,9 +180,19 @@ func writeDraft(w io.Writer, d Draft, loc *time.Location, md bool) {
 		fmt.Fprintln(w, "  No counted time.")
 	}
 	for _, wl := range d.Worklogs {
+		var notes []string
+		if wl.Assigned > 0 {
+			notes = append(notes, "assigned "+dur(wl.Assigned))
+		}
+		if wl.ByHand != 0 {
+			notes = append(notes, fmt.Sprintf("%+dm by hand", wl.ByHand))
+		}
+		if d.Settings.Round > 0 && wl.Minutes != wl.Counted+wl.Assigned+wl.ByHand {
+			notes = append(notes, fmt.Sprintf("rounded to %dm", d.Settings.Round))
+		}
 		note := ""
-		if wl.Minutes != wl.Counted {
-			note = fmt.Sprintf("  (counted %s, rounded to %dm)", dur(wl.Counted), d.Settings.Round)
+		if len(notes) > 0 {
+			note = "  (" + strings.Join(notes, ", ") + ")"
 		}
 		fmt.Fprintf(w, "  %-10s %8s   from %s%s\n", wl.Ticket, dur(wl.Minutes), clock(wl.Started), note)
 	}
@@ -218,7 +229,7 @@ func writeDraft(w io.Writer, d Draft, loc *time.Location, md bool) {
 	}
 }
 
-func hasTicket(ws []Worklog, k string) bool {
+func hasTicket(ws []draft.Worklog, k string) bool {
 	for _, w := range ws {
 		if w.Ticket == k {
 			return true

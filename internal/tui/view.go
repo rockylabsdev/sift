@@ -1,0 +1,712 @@
+package tui
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/rockylabsdev/sift/internal/derive"
+	"github.com/rockylabsdev/sift/internal/draft"
+)
+
+const labelW = 10
+
+func (m Model) hue(t string) rgb {
+	th := m.theme_()
+	for i, x := range m.tickets {
+		if x == t {
+			return th.hue[i%len(th.hue)]
+		}
+	}
+	return th.muted
+}
+
+// span is the hours the day box draws: from the hour of the first stretch
+// to the hour after the last, at least eight hours.
+func (m Model) span() (from, to int) {
+	s := m.stretches()
+	if len(s) == 0 {
+		return 8 * 60, 18 * 60
+	}
+	from = m.minute(s[0].From) / 60 * 60
+	to = (m.minute(s[len(s)-1].To) + 59) / 60 * 60
+	for to-from < 8*60 {
+		if to < m.dayLen() {
+			to += 60
+		}
+		if to-from < 8*60 && from > 0 {
+			from -= 60
+		}
+		if from == 0 && to >= m.dayLen() {
+			break
+		}
+	}
+	return from, to
+}
+
+func (m Model) clock(min int) string {
+	return m.in.Day.Start.Add(time.Duration(min) * time.Minute).Format("15:04")
+}
+
+func (m Model) clockT(t time.Time) string { return t.In(m.in.Start.Location()).Format("15:04") }
+
+// --- 1 day ---
+
+// laneLayout picks density rows per lane and separators to fit h rows.
+func (m Model) laneLayout() (evRows int, sep bool, shown int) {
+	n := len(m.tickets)
+	room := m.h - 2 - 13 // header, footer, and a bottom panel of 13
+	for _, c := range []struct {
+		ev  int
+		sep bool
+	}{{3, true}, {2, true}, {2, false}, {1, false}} {
+		if c.ev == 3 && m.h < 44 {
+			continue
+		}
+		if dayHeight(n, c.ev, c.sep) <= room {
+			return c.ev, c.sep, n
+		}
+	}
+	shown = max((room-6)/2, 1) // one density row and a baseline each, then "+N more"
+	return 1, false, min(shown, n)
+}
+
+func dayHeight(lanes, evRows int, sep bool) int {
+	h := 2 + 1 + lanes*(evRows+1) + 3
+	if sep && lanes > 1 {
+		h += lanes - 1
+	}
+	return max(h, 9)
+}
+
+func (m Model) dayBox(w int) []string {
+	th := m.theme_()
+	evRows, sep, shown := m.laneLayout()
+	from, to := m.span()
+	g := w - 2 - labelW - 1
+	col := func(c int) (int, int) { return from + c*(to-from)/g, from + (c+1)*(to-from)/g }
+	sel, hasSel := m.selected()
+	bgAt := func(c int) *rgb {
+		a, b := col(c)
+		if mid := (a + b) / 2; hasSel && mid >= m.minute(sel.From) && mid < m.minute(sel.To) {
+			return &th.sel
+		}
+		return nil
+	}
+
+	var out []string
+	axis := []rune(strings.Repeat(" ", g))
+	step := 60
+	if (to-from)/60 > 10 {
+		step = 120
+	}
+	for h := from; h < to; h += step {
+		if c := (h - from) * g / (to - from); c+2 <= g {
+			copy(axis[c:], []rune(m.in.Day.Start.Add(time.Duration(h)*time.Minute).Format("15")))
+		}
+	}
+	out = append(out, strings.Repeat(" ", labelW)+fg(th.dim, string(axis)))
+
+	if len(m.stretches()) == 0 {
+		return append(out, "", " "+fg(th.muted, "No evidence on "+m.in.Start.Format("Mon 2 Jan")+"."),
+			" "+fg(th.dim, "Prompts you type in Claude Code are recorded here as you work."))
+	}
+
+	// event density on one scale shared by every lane, two samples a column
+	n := 2 * g
+	val := make([][]float64, len(m.tickets))
+	peak := 1.0
+	idx := map[string]int{}
+	for i, t := range m.tickets {
+		idx[t] = i
+		val[i] = make([]float64, n)
+	}
+	for _, e := range m.in.Events {
+		if e.Ticket == nil {
+			continue
+		}
+		i, ok := idx[*e.Ticket]
+		if !ok {
+			continue
+		}
+		at := float64(m.minute(e.At) - from)
+		for s := max(int((at-6)*float64(n)/float64(to-from)), 0); s < n; s++ {
+			x := float64(s) * float64(to-from) / float64(n)
+			if x > at+6 {
+				break
+			}
+			if d := abs(x - at); d < 6 {
+				val[i][s] += 1 - d/6
+			}
+		}
+	}
+	for i := range val {
+		for _, v := range val[i] {
+			peak = max(peak, v)
+		}
+	}
+
+	left := []rune{0x40, 0x04, 0x02, 0x01}
+	right := []rune{0x80, 0x20, 0x10, 0x08}
+	for i, t := range m.tickets[:shown] {
+		if i > 0 && sep {
+			out = append(out, "")
+		}
+		h := m.hue(t)
+		for r := 0; r < evRows; r++ {
+			label := ""
+			switch {
+			case r == 0:
+				label = " " + bold(h, t)
+			case r == 1:
+				label = " " + fg(th.text, dur(m.worklog(t).Minutes))
+			}
+			var b strings.Builder
+			for c := 0; c < g; c++ {
+				ch := rune(0x2800)
+				for side, dots := range [][]rune{left, right} {
+					lvl := int(val[i][2*c+side]/peak*float64(4*evRows) + 0.99)
+					for k := 0; k < min(max(lvl-(evRows-1-r)*4, 0), 4); k++ {
+						ch |= dots[k]
+					}
+				}
+				if ch == 0x2800 {
+					ch = ' '
+				}
+				b.WriteString(on(h, bgAt(c), string(ch)))
+			}
+			out = append(out, pad(label, labelW)+b.String())
+		}
+		label := ""
+		if evRows == 1 {
+			label = " " + fg(th.text, dur(m.worklog(t).Minutes))
+		}
+		var b strings.Builder
+		for c := 0; c < g; c++ {
+			a, z := col(c)
+			own := 0
+			for mm := a; mm < z && mm < len(m.effT); mm++ {
+				if m.effT[mm] == t {
+					own++
+				}
+			}
+			if own*2 >= max(z-a, 1) {
+				b.WriteString(on(h, bgAt(c), "━"))
+			} else {
+				b.WriteString(on(th.faint, bgAt(c), "─"))
+			}
+		}
+		out = append(out, pad(label, labelW)+b.String())
+	}
+	if shown < len(m.tickets) {
+		out = append(out, " "+fg(th.dim, fmt.Sprintf("+ %d more tickets, in the draft", len(m.tickets)-shown)))
+	}
+
+	// meetings, gaps and ticketless time: amber or dim until assigned
+	other := make([]string, g)
+	for c := range other {
+		a, z := col(c)
+		mid := min((a+z)/2, len(m.effK)-1)
+		k, t := m.effK[mid], m.effT[mid]
+		tone := th.amber
+		if t != "" {
+			tone = m.hue(t)
+		}
+		switch {
+		case k == derive.InMeet:
+			other[c] = on(tone, bgAt(c), "▰")
+		case k == derive.Silence:
+			if t == "" {
+				tone = th.dim
+			}
+			other[c] = on(tone, bgAt(c), "░")
+		case k == derive.Work && t == "":
+			other[c] = on(th.amber, bgAt(c), "?")
+		default:
+			other[c] = on(th.faint, bgAt(c), " ")
+		}
+	}
+	for _, s := range m.stretches() {
+		if s.Kind != derive.InMeet {
+			continue
+		}
+		c0 := (m.minute(s.From)-from)*g/(to-from) + 1
+		room := (m.minute(s.To)-from)*g/(to-from) - c0 - 1
+		name := []rune(s.Meeting)
+		if room < 3 || c0 < 0 {
+			continue
+		}
+		if len(name) > room {
+			name = append(name[:room-1], '…')
+		}
+		tone := th.amber
+		if t := m.in.Decisions.Assign[draft.ID(s)]; t != "" {
+			tone = m.hue(t)
+		}
+		for j, r := range name {
+			if c0+j < g {
+				other[c0+j] = on(tone, bgAt(c0+j), string(r))
+			}
+		}
+	}
+	out = append(out, pad(" "+fg(th.dim, "other"), labelW)+strings.Join(other, ""))
+
+	if hasSel {
+		a := max((m.minute(sel.From)-from)*g/(to-from), 0)
+		z := max(((m.minute(sel.To)-from)*g+(to-from)-1)/(to-from)-1, a)
+		bracket := "↑"
+		if z > a {
+			bracket = "└" + strings.Repeat("─", z-a-1) + "┘"
+		}
+		when := m.clockT(sel.From) + "–" + m.clockT(sel.To)
+		mark := strings.Repeat(" ", a) + bracket + " " + when
+		if z+2+lipgloss.Width(when) > g {
+			mark = strings.Repeat(" ", max(a-lipgloss.Width(when)-1, 0)) + when + " " + bracket
+		}
+		out = append(out, strings.Repeat(" ", labelW)+fg(th.focus, mark))
+	}
+	u := m.dr.Unassigned
+	sum := " " + fg(th.muted, "unassigned") + "  " + fg(th.amber, "▰ meetings "+dur(u.Meetings)) + fg(th.dim, "  ·  ") + fg(th.muted, "░ gaps "+dur(u.Gaps))
+	if u.Ticketless > 0 {
+		sum += fg(th.dim, "  ·  ") + fg(th.amber, "? no ticket "+dur(u.Ticketless))
+	}
+	note := fg(th.dim, "⣿ event density, one scale  ") + fg(th.muted, "━ counted ")
+	if lipgloss.Width(sum)+lipgloss.Width(note)+1 > w-2 {
+		note = fg(th.muted, "━ counted ")
+	}
+	return append(out, spread(sum, note, w-2))
+}
+
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// --- 2 stretches ---
+
+func stretchCols(iw, tickets int) (whatW, cw, lastW int) {
+	cw, lastW = 8, 11
+	return max(iw-1-11-3-cw*tickets-lastW-1, 4), cw, lastW
+}
+
+func (m Model) assignedTo(t string) string {
+	th := m.theme_()
+	if t == "" {
+		return fg(th.amber, "unassigned")
+	}
+	return fg(th.muted, "assigned to ") + bold(m.hue(t), t)
+}
+
+func (m Model) eventsIn(s derive.Stretch) (n int) {
+	for _, e := range m.in.Events {
+		if !e.At.Before(s.From) && e.At.Before(s.To) {
+			n++
+		}
+	}
+	return n
+}
+
+// tableTickets is the tickets with a column: as many as fit.
+func (m Model) tableTickets(iw int) []string {
+	n := len(m.tickets)
+	for n > 0 {
+		if w, _, _ := stretchCols(iw, n); w >= 8 {
+			break
+		}
+		n--
+	}
+	return m.tickets[:n]
+}
+
+func (m Model) stretchBox(w, h int) []string {
+	th := m.theme_()
+	iw := w - 2
+	cols := m.tableTickets(iw)
+	whatW, cw, lastW := stretchCols(iw, len(cols))
+	cell := func(n, width int, c rgb) string {
+		if n == 0 {
+			return fg(th.faint, fmt.Sprintf("%*s", width, "·"))
+		}
+		return fg(c, fmt.Sprintf("%*s", width, dur(n)))
+	}
+	head := " " + fg(th.dim, fmt.Sprintf("%-11s", "time")) + "   " + pad("", whatW)
+	for _, t := range cols {
+		head += bold(m.hue(t), fmt.Sprintf("%*s", cw, ansiCut(t, cw-1)))
+	}
+	head += fg(th.dim, fmt.Sprintf("%*s", lastW, "unassigned"))
+	body := []string{head}
+	var rows []string
+	var title, detail string
+	offSum := 0
+	for i, s := range m.stretches() {
+		per := map[string]int{}
+		off, mark, name := 0, " ", ""
+		assigned := m.in.Decisions.Assign[draft.ID(s)]
+		n, _ := draft.Assignable(s)
+		if assigned != "" {
+			per[assigned] += n
+		} else {
+			off = n
+		}
+		tone := th.amber
+		if assigned != "" {
+			tone = m.hue(assigned)
+		}
+		var more string
+		switch s.Kind {
+		case derive.InMeet:
+			mark, name = fg(tone, "▰"), fg(th.text, s.Meeting)
+			title = fg(th.amber, s.Meeting) + fg(th.text, " · "+dur(s.Minutes()))
+			more = fg(th.muted, "meeting · ") + m.assignedTo(assigned)
+			if sg := suggestion(s); assigned == "" && sg != "" {
+				more += fg(th.dim, " · its title names ") + bold(m.hue(sg), sg)
+			}
+			if e := m.eventsIn(s); e > 0 {
+				more += fg(th.amber, " · "+plural(e, "event")+" fired during it")
+			}
+		case derive.Silence:
+			if assigned == "" {
+				tone = th.dim
+			}
+			mark, name = fg(tone, "░"), fg(th.muted, "gap")
+			title = fg(th.text, "Gap · "+dur(s.Minutes()))
+			more = fg(th.muted, "no evidence · ") + m.assignedTo(assigned)
+		default:
+			for t, x := range s.Tickets {
+				per[t] += x
+			}
+			ev := m.eventsIn(s)
+			name = fg(th.dim, plural(ev, "event"))
+			if s.Unassigned > 0 {
+				mark = fg(tone, "?")
+			}
+			title = fg(th.text, m.clockT(s.From)+"–"+m.clockT(s.To)+" · "+dur(s.Minutes()))
+			var parts []string
+			for _, t := range m.tickets {
+				if per[t] > 0 && s.Tickets[t] > 0 {
+					parts = append(parts, fg(m.hue(t), t)+" "+fg(th.text, dur(s.Tickets[t])))
+				}
+			}
+			if s.Unassigned > 0 {
+				parts = append(parts, fg(th.amber, "no ticket "+dur(s.Unassigned))+fg(th.muted, ", ")+m.assignedTo(assigned))
+			}
+			more = strings.Join(parts, fg(th.dim, " · ")) + fg(th.dim, " · from "+plural(ev, "event"))
+		}
+		offSum += off
+		row := m.clockT(s.From) + "–" + m.clockT(s.To) + " " + mark + " " + pad(name, whatW)
+		for _, t := range cols {
+			row += cell(per[t], cw, th.text)
+		}
+		row += cell(off, lastW, th.amber)
+		if i == m.cur {
+			row = on(th.text, &th.sel, pad(bold(th.text, "›")+fg(th.text, row), iw))
+			detail = title + "\n" + more
+		} else {
+			row = " " + fg(th.text, row)
+		}
+		rows = append(rows, row)
+	}
+	hand := ""
+	for _, t := range cols {
+		if m.worklog(t).ByHand != 0 {
+			hand = " " + fg(th.amber, fmt.Sprintf("%-11s", "by hand")) + "   " + pad("", whatW)
+			for _, t := range cols {
+				if b := m.worklog(t).ByHand; b != 0 {
+					hand += fg(th.amber, fmt.Sprintf("%*s", cw, signed(b)))
+				} else {
+					hand += fg(th.faint, fmt.Sprintf("%*s", cw, "·"))
+				}
+			}
+			hand += fg(th.faint, fmt.Sprintf("%*s", lastW, "·"))
+			break
+		}
+	}
+	room := h - 2 - 6
+	if hand != "" {
+		room--
+	}
+	first := max(m.cur-room+1, 0)
+	rows = rows[min(first, len(rows)):]
+	more := 0
+	if len(rows) > room {
+		more, rows = len(rows)-room, rows[:max(room, 0)]
+	}
+	body = append(body, rows...)
+	if len(m.stretches()) == 0 {
+		body = append(body, " "+fg(th.dim, "Nothing to review yet."))
+	}
+	if hand != "" {
+		body = append(body, hand)
+	}
+	rule := " " + fg(th.faint, strings.Repeat("─", iw-2))
+	if first+more > 0 {
+		hidden := fmt.Sprintf("%d above · %d below ", first, more)
+		rule = " " + fg(th.dim, hidden) + fg(th.faint, strings.Repeat("─", max(iw-2-lipgloss.Width(hidden), 0)))
+	}
+	foot := " " + fg(th.dim, fmt.Sprintf("%-11s", "total")) + "   " + pad("", whatW)
+	for _, t := range cols {
+		foot += bold(m.hue(t), fmt.Sprintf("%*s", cw, dur(m.worklog(t).Minutes)))
+	}
+	foot += bold(th.amber, fmt.Sprintf("%*s", lastW, dur(offSum)))
+	body = append(body, rule, foot)
+	for len(body) < h-4 {
+		body = append(body, "")
+	}
+	t, dt, _ := strings.Cut(detail, "\n")
+	body = append(body, " "+t, " "+dt)
+	right := fg(th.dim, fmt.Sprintf("%d of %d", min(m.cur+1, len(m.stretches())), len(m.stretches())))
+	if extra := len(m.tickets) - len(cols); extra > 0 {
+		right = fg(th.dim, fmt.Sprintf("%d tickets in the draft only · ", extra)) + right
+	}
+	return th.box(2, "stretches", right, m.inspect == 0, w, h, body)
+}
+
+func ansiCut(s string, w int) string {
+	if len(s) <= w {
+		return s
+	}
+	return s[:w-1] + "…"
+}
+
+// --- inspect ---
+
+func (m Model) inspectBox(w, h int) []string {
+	th := m.theme_()
+	s, ok := m.selected()
+	if !ok {
+		return th.box(2, "inspect", "", true, w, h, []string{" " + fg(th.dim, "Nothing to inspect.")})
+	}
+	iw := w - 2
+	var evs []int
+	for i, e := range m.in.Events {
+		if !e.At.Before(s.From) && e.At.Before(s.To) {
+			evs = append(evs, i)
+		}
+	}
+	assigned := m.in.Decisions.Assign[draft.ID(s)]
+	head := " " + bold(th.text, m.clockT(s.From)+"–"+m.clockT(s.To)) + fg(th.muted, " · "+dur(s.Minutes())+" · ")
+	switch s.Kind {
+	case derive.InMeet:
+		head += fg(th.amber, s.Meeting) + fg(th.muted, " · meeting · ") + m.assignedTo(assigned)
+	case derive.Silence:
+		head += fg(th.muted, "gap · no evidence · ") + m.assignedTo(assigned)
+	default:
+		head += fg(th.muted, "work · "+plural(len(evs), "event"))
+	}
+	body := []string{head, ""}
+
+	// who was credited, and where each ticket was found
+	type src struct {
+		n       int
+		via     map[string]bool
+		counted int
+	}
+	per := map[string]*src{}
+	get := func(t string) *src {
+		if per[t] == nil {
+			per[t] = &src{via: map[string]bool{}}
+		}
+		return per[t]
+	}
+	for mm := m.minute(s.From); mm < m.minute(s.To); mm++ {
+		if t := m.effT[mm]; t != "" {
+			get(t).counted++
+		}
+	}
+	ticketless := 0
+	for _, i := range evs {
+		e := m.in.Events[i]
+		if e.Ticket == nil {
+			ticketless++
+			continue
+		}
+		x := get(*e.Ticket)
+		x.n++
+		x.via[e.Found.Via+" "+e.Found.Value] = true
+	}
+	for _, t := range append(append([]string{}, m.tickets...), keysOf(per)...) {
+		x := per[t]
+		if x == nil {
+			continue
+		}
+		delete(per, t)
+		line := " " + pad(bold(m.hue(t), t), 10) + fg(th.text, fmt.Sprintf("%7s", dur(x.counted))) + fg(th.muted, " counted")
+		if x.n > 0 {
+			var via []string
+			for v := range x.via {
+				via = append(via, v)
+			}
+			line += fg(th.dim, " · "+plural(x.n, "prompt")+" · ") + fg(th.muted, strings.Join(via, ", "))
+		} else {
+			line += fg(th.dim, " · assigned by you")
+		}
+		body = append(body, line)
+	}
+	if ticketless > 0 {
+		body = append(body, " "+fg(th.amber, "? "+plural(ticketless, "prompt")+" named no ticket")+fg(th.muted, "; t assigns their time"))
+	}
+	if s.Kind == derive.InMeet && len(evs) > 0 {
+		body = append(body, " "+fg(th.amber, "! "+plural(len(evs), "event")+" fired during it")+fg(th.muted, "; the meeting wins until you assign it"))
+	}
+	worst, at := 0, time.Time{}
+	for k := 1; k < len(evs); k++ {
+		a, b := m.in.Events[evs[k-1]].At, m.in.Events[evs[k]].At
+		if d := int(b.Sub(a) / time.Minute); d > worst {
+			worst, at = d, b
+		}
+	}
+	gap := m.in.IdleGap
+	switch {
+	case len(evs) < 2:
+	case worst >= gap-2:
+		body = append(body, " "+fg(th.amber, fmt.Sprintf("! longest silence +%dm before %s", worst, m.clockT(at)))+fg(th.muted, fmt.Sprintf(", %s inside the %dm idle gap; a slower prompt would have split this stretch", dur(gap-worst), gap)))
+	default:
+		body = append(body, " "+fg(th.dim, fmt.Sprintf("longest silence +%dm, well inside the %dm idle gap", worst, gap)))
+	}
+
+	if m.inspect < 2 {
+		body = append(body, "", " "+fg(th.dim, "e again lists every event with the silence before it · esc closes"))
+		return th.box(2, "inspect", fg(th.dim, plural(len(evs), "event")), true, w, h, body)
+	}
+	body = append(body, "")
+	const cellW = 16
+	perLine := max((iw-2)/cellW, 1)
+	room := (h - 2 - len(body)) * perLine
+	var line strings.Builder
+	for k, i := range evs {
+		if k == room-1 && len(evs) > room {
+			line.WriteString(fg(th.dim, fmt.Sprintf("+ %d more", len(evs)-k)))
+			break
+		}
+		e := m.in.Events[i]
+		c, mark := th.amber, "?"
+		if e.Ticket != nil {
+			c, mark = m.hue(*e.Ticket), "│"
+		}
+		since := ""
+		if k > 0 {
+			d := int(e.At.Sub(m.in.Events[evs[k-1]].At) / time.Minute)
+			sc := th.dim
+			if d >= gap-2 {
+				sc = th.amber
+			}
+			since = fg(sc, fmt.Sprintf("+%dm", d))
+		}
+		line.WriteString(pad(fg(th.text, m.clockT(e.At))+" "+bold(c, mark)+" "+since, cellW))
+		if (k+1)%perLine == 0 {
+			body = append(body, " "+line.String())
+			line.Reset()
+		}
+	}
+	if line.Len() > 0 {
+		body = append(body, " "+line.String())
+	}
+	if len(evs) == 0 {
+		body = append(body, " "+fg(th.dim, "nothing fired in this stretch"))
+	}
+	legend := fg(th.muted, "│ prompt  ? no ticket  ") + fg(th.amber, fmt.Sprintf("+%dm", gap-1)) + fg(th.muted, " near the idle gap")
+	return th.box(2, "inspect · every event", legend, true, w, h, body)
+}
+
+func keysOf[T any](m map[string]T) []string {
+	var out []string
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+// --- 3 draft ---
+
+func (m Model) draftBox(w, h int) []string {
+	th := m.theme_()
+	iw := w - 2
+	line := func(l, r string) string { return " " + spread(l, r, iw-2) }
+	u := m.dr.Unassigned
+	ruled := h-2 >= len(m.dr.Worklogs)*3+3
+	var body []string
+	for _, wl := range m.dr.Worklogs {
+		key := bold(m.hue(wl.Ticket), wl.Ticket)
+		if wl.ByHand != 0 {
+			key += fg(th.amber, "  "+signed(wl.ByHand)+" by hand")
+		}
+		sub := ""
+		if wl.Assigned > 0 {
+			sub = "incl. " + dur(wl.Assigned) + " assigned"
+		}
+		body = append(body, line(key, bold(th.text, dur(wl.Minutes))), " "+fg(th.muted, "from "+m.clockT(wl.Started)+"  ")+fg(th.dim, sub))
+		if ruled {
+			body = append(body, " "+fg(th.faint, strings.Repeat("─", iw-2)))
+		}
+	}
+	if len(m.dr.Worklogs) == 0 {
+		body = append(body, " "+fg(th.dim, "No worklogs."))
+	}
+	if !ruled {
+		body = append(body, " "+fg(th.faint, strings.Repeat("─", iw-2)))
+	}
+	label := "ready to send"
+	if m.dr.Confirmed {
+		label = "confirmed"
+	}
+	body = append(body, line(bold(th.text, label), bold(th.text, dur(m.dr.Total))),
+		line(fg(th.muted, "unassigned"), fg(th.amber, dur(u.Meetings+u.Gaps+u.Ticketless))))
+	if m.in.Round > 0 {
+		body = append(body, " "+fg(th.dim, fmt.Sprintf("rounded to %dm per ticket", m.in.Round)))
+	}
+	return th.box(3, "draft", fg(th.dim, plural(len(m.dr.Sendable()), "worklog")), false, w, h, body)
+}
+
+func (m Model) View() tea.View {
+	th := m.theme_()
+	var out []string
+	switch {
+	case m.w < 96 || m.h < 30:
+		out = []string{fmt.Sprintf("sift needs a terminal of at least 96×30 (now %d×%d).", m.w, m.h)}
+	case m.err != nil && m.in.Day.Start.IsZero():
+		out = []string{"sift: " + m.err.Error()}
+	default:
+		state := "draft"
+		if m.dr.Confirmed {
+			state = "confirmed"
+		}
+		brand := " " + bold(th.text, "sift") + " " + fg(th.focus, "▰") + "   " + fg(th.text, m.in.Start.Format("Mon 2 Jan")) + fg(th.dim, " · "+state)
+		right := fmt.Sprintf("%s · %s to send ", plural(len(m.dr.Sendable()), "ticket"), dur(m.dr.Total))
+		out = append(out, spread(brand, fg(th.muted, right), m.w))
+		evRows, sep, shown := m.laneLayout()
+		topH := dayHeight(shown, evRows, sep)
+		if shown < len(m.tickets) {
+			topH++
+		}
+		if len(m.stretches()) == 0 {
+			topH = 7
+		}
+		out = append(out, th.box(1, "day", fg(th.dim, "evidence and counted time"), false, m.w, topH, m.dayBox(m.w))...)
+		botH := m.h - topH - 2
+		rw := max(34, min(46, m.w*36/100))
+		if m.inspect > 0 {
+			out = append(out, m.inspectBox(m.w, botH)...)
+		} else {
+			l, r := m.stretchBox(m.w-rw, botH), m.draftBox(rw, botH)
+			for i := range l {
+				out = append(out, l[i]+r[i])
+			}
+		}
+		key := func(k, what string) string { return fg(th.text, k) + fg(th.dim, " "+what+"   ") }
+		keys := " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("+ −", "adjust") + key("[ ]", "day") + key("T", th.Name) + key("q", "quit")
+		status := fg(th.faint, m.in.Meetings+" ")
+		if m.msg != "" {
+			status = fg(th.amber, m.msg+" ")
+		}
+		out = append(out, spread(keys, status, m.w))
+	}
+	v := tea.NewView(strings.Join(out, "\n"))
+	v.AltScreen = true
+	v.BackgroundColor = lipgloss.Color(th.bg.String())
+	v.ForegroundColor = lipgloss.Color(th.text.String())
+	return v
+}

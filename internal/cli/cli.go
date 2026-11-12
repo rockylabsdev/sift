@@ -71,6 +71,9 @@ func (u usageError) Error() string { return u.msg }
 
 const usage = `sift: a terminal worklog drafter
 
+  sift                               review the earliest day waiting, else today
+  sift review [--date YYYY-MM-DD]    review a day: assign, adjust, inspect
+  sift status                        today's totals and the days waiting
   sift record [--cwd DIR] [--hook]   record an event: you were working here
   sift events [--date YYYY-MM-DD]    list a day's events
   sift draft  [--date YYYY-MM-DD]    the worklogs the day would produce
@@ -82,7 +85,10 @@ const usage = `sift: a terminal worklog drafter
 // Run runs sift with args and returns the exit code.
 func Run(args []string, env Env) int {
 	r := &run{Env: env, json: env.Getenv("SIFT_JSON") == "1"}
-	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
+	if len(args) == 0 {
+		args = []string{"review"}
+	}
+	if args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		fmt.Fprintln(env.Stdout, usage)
 		return exitOK
 	}
@@ -97,6 +103,8 @@ func Run(args []string, env Env) int {
 		"events":  r.events,
 		"draft":   r.draft,
 		"version": r.version,
+		"review":  r.review,
+		"status":  r.status,
 	}
 	cmd, ok := cmds[r.command]
 	if !ok {
@@ -179,6 +187,7 @@ type Config struct {
 	Round     int      `json:"round_minutes,omitempty"` // 0, 5 or 15
 	EventsWin bool     `json:"events_beat_meetings,omitempty"`
 	Projects  []string `json:"projects,omitempty"` // the branch rule takes only these projects' keys
+	Theme     string   `json:"theme,omitempty"`
 }
 
 func (r *run) config() (Config, error) {

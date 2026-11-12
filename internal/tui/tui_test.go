@@ -1,0 +1,203 @@
+package tui
+
+import (
+	"flag"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/rockylabsdev/sift/internal/derive"
+	"github.com/rockylabsdev/sift/internal/draft"
+	"github.com/rockylabsdev/sift/internal/evidence"
+)
+
+var update = flag.Bool("update", false, "rewrite the golden frames")
+
+var day0 = time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+
+func hm(h, m int) time.Time { return day0.Add(time.Duration(h*60+m) * time.Minute) }
+
+// fake is a Source over one fixed day and an in-memory decisions store.
+type fake struct {
+	events   []evidence.Event
+	meetings []derive.Meeting
+	dec      map[string]draft.Decisions
+}
+
+func key(s string) *string { return &s }
+
+func newFake() *fake {
+	f := &fake{dec: map[string]draft.Decisions{}}
+	add := func(h, m int, t string) {
+		e := evidence.Event{At: hm(h, m), Origin: evidence.Prompt, Kind: "prompt"}
+		if t != "" {
+			e.Ticket, e.Found = key(t), &evidence.Found{Via: "branch", Value: "feature/" + t}
+		}
+		f.events = append(f.events, e)
+	}
+	for m := 0; m < 50; m += 3 {
+		add(9, m, "PUN-142")
+	}
+	for m := 52; m < 60; m += 4 {
+		add(9, m, "OPS-77")
+	}
+	add(10, 40, "")
+	for m := 0; m < 40; m += 5 {
+		add(11, m, "OPS-77")
+	}
+	f.meetings = []derive.Meeting{{From: hm(10, 0), To: hm(10, 30), Title: "PUN-142 standup"}}
+	return f
+}
+
+func (f *fake) Load(day time.Time) (Input, error) {
+	var in []derive.Event
+	var mine []evidence.Event
+	for _, e := range f.events {
+		t := ""
+		if e.Ticket != nil {
+			t = *e.Ticket
+		}
+		in = append(in, derive.Event{At: e.At, Ticket: t})
+		if !e.At.Before(day) && e.At.Before(day.AddDate(0, 0, 1)) {
+			mine = append(mine, e)
+		}
+	}
+	var ms []derive.Meeting
+	if day.Equal(day0) {
+		ms = f.meetings
+	}
+	d := f.dec[day.Format("2006-01-02")]
+	return Input{Start: day, Events: mine, Day: derive.For(day, in, ms, derive.Defaults), Decisions: d,
+		IdleGap: 10, Meetings: "calendar: test"}, nil
+}
+
+func (f *fake) Update(day time.Time, change func(*draft.Decisions) error) error {
+	k := day.Format("2006-01-02")
+	d := f.dec[k]
+	if d.Confirmed != nil {
+		return draft.ErrConfirmed
+	}
+	if err := change(&d); err != nil {
+		return err
+	}
+	f.dec[k] = d
+	return nil
+}
+
+func press(m Model, keys ...string) Model {
+	for _, k := range keys {
+		var msg tea.KeyPressMsg
+		switch k {
+		case "down":
+			msg = tea.KeyPressMsg{Code: tea.KeyDown}
+		case "esc":
+			msg = tea.KeyPressMsg{Code: tea.KeyEscape}
+		default:
+			msg = tea.KeyPressMsg{Code: []rune(k)[0], Text: k}
+		}
+		next, _ := m.Update(msg)
+		m = next.(Model)
+	}
+	return m
+}
+
+func sized(m Model, w, h int) Model {
+	next, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	return next.(Model)
+}
+
+func frame(m Model) string { return ansi.Strip(m.View().Content) }
+
+func golden(t *testing.T, name, got string) {
+	t.Helper()
+	path := filepath.Join("testdata", name+".golden")
+	if *update {
+		os.MkdirAll("testdata", 0o755)
+		os.WriteFile(path, []byte(got), 0o644)
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%v (run go test ./internal/tui -update)", err)
+	}
+	if string(want) != got {
+		t.Errorf("%s changed; rerun with -update if intended\n--- got\n%s", name, got)
+	}
+}
+
+func TestGoldenFrames(t *testing.T) {
+	for _, size := range [][2]int{{96, 30}, {130, 38}} {
+		w, h := size[0], size[1]
+		sz := func(n string) string { return n + "-" + strings.ReplaceAll(strings.Trim(strings.ReplaceAll(fmtSize(w, h), " ", ""), ""), " ", "") }
+		m := sized(New(newFake(), day0, ""), w, h)
+		golden(t, sz("review"), frame(m))
+		golden(t, sz("inspect"), frame(press(m, "e")))
+		golden(t, sz("inspect-every-event"), frame(press(m, "e", "e")))
+		golden(t, sz("meeting-assigned"), frame(press(m, "down", "t")))
+		golden(t, sz("empty-day"), frame(press(m, "]")))
+	}
+}
+
+func fmtSize(w, h int) string { return strings.Join([]string{itoa(w), itoa(h)}, "x") }
+
+func itoa(n int) string {
+	s := ""
+	for n > 0 {
+		s = string(rune('0'+n%10)) + s
+		n /= 10
+	}
+	return s
+}
+
+func TestAssignCyclesThroughTheTicketTheTitleNamesFirst(t *testing.T) {
+	f := newFake()
+	m := press(New(f, day0, ""), "down")
+	if s, _ := m.selected(); s.Kind != derive.InMeet {
+		t.Fatalf("selected %+v, want the meeting", s)
+	}
+	var got []string
+	for i := 0; i < 3; i++ {
+		m = press(m, "t")
+		got = append(got, m.in.Decisions.Assign["meeting@10:00"])
+	}
+	if strings.Join(got, ",") != "PUN-142,OPS-77," {
+		t.Fatalf("cycle %v; want the named ticket, the other ticket, then unassigned", got)
+	}
+}
+
+func TestMinusStopsAtZero(t *testing.T) {
+	m := New(newFake(), day0, "")
+	for i := 0; i < 30; i++ {
+		m = press(m, "-")
+	}
+	w := m.worklog("PUN-142")
+	if w.Minutes != 0 || w.ByHand != -w.Counted {
+		t.Fatalf("%+v", w)
+	}
+	m = press(m, "+")
+	if m.worklog("PUN-142").Minutes != 5 {
+		t.Fatalf("one + from the floor gives %dm, want 5m", m.worklog("PUN-142").Minutes)
+	}
+}
+
+func TestAConfirmedDayRefusesChanges(t *testing.T) {
+	f := newFake()
+	f.dec["2026-11-10"] = draft.Decisions{Confirmed: &draft.Confirmed{Worklogs: []draft.Worklog{{Ticket: "PUN-142", Minutes: 60, Started: hm(9, 0)}}}}
+	m := press(New(f, day0, ""), "+")
+	if !strings.Contains(m.msg, "confirmed") || m.dr.Total != 60 {
+		t.Fatalf("msg %q total %d", m.msg, m.dr.Total)
+	}
+	if !strings.Contains(frame(sized(m, 120, 36)), "Tue 10 Nov · confirmed") {
+		t.Fatalf("the header does not say confirmed")
+	}
+}
+
+func TestOnlyAssignableStretchesAssign(t *testing.T) {
+	m := press(New(newFake(), day0, ""), "t")
+	if !strings.Contains(m.msg, "Only meetings") || len(m.in.Decisions.Assign) != 0 {
+		t.Fatalf("msg %q, assign %v", m.msg, m.in.Decisions.Assign)
+	}
+}

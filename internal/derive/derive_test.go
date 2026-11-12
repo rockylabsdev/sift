@@ -162,6 +162,15 @@ func TestInvariants(t *testing.T) {
 				un.Ticketless += st.Unassigned
 			}
 		}
+		runs := map[string]int{}
+		for _, r := range d.Runs {
+			if r.Kind == Work && r.Ticket != "" {
+				runs[r.Ticket] += int(r.To.Sub(r.From) / time.Minute)
+			}
+		}
+		if got := totals(d); !reflect.DeepEqual(runs, got) {
+			t.Fatalf("day %d: runs %v, totals %v", n, runs, got)
+		}
 		if got := totals(d); !reflect.DeepEqual(cols, got) {
 			t.Fatalf("day %d: columns %v, totals %v", n, cols, got)
 		}

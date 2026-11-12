@@ -70,8 +70,19 @@ type Unassigned struct {
 	Ticketless int `json:"ticketless"`
 }
 
+// Run is a span of minutes with a single owner: one ticket, ticketless
+// work, one meeting, or a gap. Runs tile the day's counted time; the
+// review screen draws them minute by minute.
+type Run struct {
+	From, To time.Time
+	Kind     Kind
+	Ticket   string // a work run's ticket; "" when ticketless
+	Meeting  string
+}
+
 // Day is a derived day.
 type Day struct {
+	Runs       []Run      `json:"-"`
 	Start      time.Time  `json:"start"`
 	End        time.Time  `json:"end"`
 	Stretches  []Stretch  `json:"stretches"`
@@ -214,6 +225,26 @@ func For(start time.Time, events []Event, meetings []Meeting, s Settings) Day {
 		}
 	}
 	sort.SliceStable(day.Totals, func(a, b int) bool { return day.Totals[a].First.Before(day.Totals[b].First) })
+
+	for i := 0; i < len(own); {
+		j := i
+		for j < len(own) && own[j] == own[i] {
+			j++
+		}
+		if o := own[i]; o != none {
+			r := Run{From: at(i), To: at(j), Kind: Work}
+			switch {
+			case o >= 0:
+				r.Ticket = keys[o]
+			case isMeeting(o):
+				r.Kind, r.Meeting = InMeet, meetings[meet0-o].Title
+			case o == gap:
+				r.Kind = Silence
+			}
+			day.Runs = append(day.Runs, r)
+		}
+		i = j
+	}
 
 	isWork := func(o int) bool { return o >= 0 || o == loose }
 	for i := 0; i < len(own); {
