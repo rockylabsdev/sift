@@ -78,7 +78,7 @@ Repeat one such break after any edit to the checks themselves.
 - What the day strip *should* credit: the derivation rules themselves (idle gap, tail credit, midpoint split). P1 checks that the draft agrees with the strip, not that the strip is right.
 - Hand adjustments beyond ±10m on the seeded day. The generated days reach any size, including the 0m floor.
 - Meetings that start before 08:00 or end after 20:00, and days with no events (`derive` indexes `ev[0]` and panics on an empty day; the app never builds one).
-- Rendering beyond the stretches table, the events view, and anything after `⏎ confirm & send`, which the prototype does not implement.
+- Rendering beyond the stretches table, the inspect view, and confirming or sending, which the prototype does not implement.
 
 ## Coverage and sync
 
