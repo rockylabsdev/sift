@@ -108,8 +108,12 @@ func (r *run) review(args []string) (any, func(io.Writer), error) {
 }
 
 func (r *run) status(args []string) (any, func(io.Writer), error) {
-	if err := r.flags(args, nil); err != nil {
+	var hook bool
+	if err := r.flags(args, func(fs *flag.FlagSet) { fs.BoolVar(&hook, "hook", false, "") }); err != nil {
 		return nil, nil, err
+	}
+	if hook {
+		return r.nudge()
 	}
 	l, err := r.load("")
 	if err != nil {

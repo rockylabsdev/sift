@@ -131,7 +131,9 @@ func golden(t *testing.T, name, got string) {
 func TestGoldenFrames(t *testing.T) {
 	for _, size := range [][2]int{{96, 30}, {130, 38}} {
 		w, h := size[0], size[1]
-		sz := func(n string) string { return n + "-" + strings.ReplaceAll(strings.Trim(strings.ReplaceAll(fmtSize(w, h), " ", ""), ""), " ", "") }
+		sz := func(n string) string {
+			return n + "-" + strings.ReplaceAll(strings.Trim(strings.ReplaceAll(fmtSize(w, h), " ", ""), ""), " ", "")
+		}
 		m := sized(New(newFake(), day0, ""), w, h)
 		golden(t, sz("review"), frame(m))
 		golden(t, sz("inspect"), frame(press(m, "e")))

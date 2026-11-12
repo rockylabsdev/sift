@@ -105,6 +105,7 @@ func Run(args []string, env Env) int {
 		"version": r.version,
 		"review":  r.review,
 		"status":  r.status,
+		"gate":    r.gate,
 	}
 	cmd, ok := cmds[r.command]
 	if !ok {
