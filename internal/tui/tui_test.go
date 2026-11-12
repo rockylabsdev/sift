@@ -211,7 +211,7 @@ func TestAConfirmedDayRefusesChanges(t *testing.T) {
 	f := newFake()
 	f.dec["2026-11-10"] = draft.Decisions{Confirmed: &draft.Confirmed{Worklogs: []draft.Worklog{{Ticket: "PUN-142", Minutes: 60, Started: hm(9, 0)}}}}
 	m := press(New(f, day0, ""), "+")
-	if !strings.Contains(m.msg, "confirmed") || m.dr.Total != 60 {
+	if !strings.Contains(m.msg, "Confirmed days do not change") || m.dr.Total != 60 {
 		t.Fatalf("msg %q total %d", m.msg, m.dr.Total)
 	}
 	fr := frame(sized(m, 120, 36))
