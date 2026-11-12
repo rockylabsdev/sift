@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/rockylabsdev/sift/internal/calendar"
 	"github.com/rockylabsdev/sift/internal/derive"
 	"github.com/rockylabsdev/sift/internal/evidence"
 )
@@ -63,6 +64,10 @@ type run struct {
 	json     bool
 	jsonFlag bool     // --json given on the command line, not just SIFT_JSON
 	notes    []string // side effects nobody asked for, the envelope's events
+
+	withCalendar bool                                 // fetch meetings when loading a day
+	demoMeetings func(day time.Time) []derive.Meeting // the demo's fixed meetings
+	calendars    map[string]calendar.Day              // fetched this run, by date
 }
 
 type usageError struct{ msg string }
@@ -78,6 +83,11 @@ const usage = `sift: a terminal worklog drafter
   sift events [--date YYYY-MM-DD]    list a day's events
   sift draft  [--date YYYY-MM-DD]    the worklogs the day would produce
   sift block KEY HH:MM-HH:MM         add time by hand (--remove takes it back)
+  sift confirm [--date YYYY-MM-DD]   accept the day: one worklog per ticket, sent
+  sift sync                          send worklogs still owed
+  sift log [--from D] [--to D]       worklogs, this week by default
+  sift setup jira|calendar|none      connect a tracker or a calendar
+  sift import punchcard              copy punchcard's worklog history
   sift version
 
   --json (or SIFT_JSON=1) writes the result as a JSON envelope.
@@ -85,7 +95,7 @@ const usage = `sift: a terminal worklog drafter
 
 // Run runs sift with args and returns the exit code.
 func Run(args []string, env Env) int {
-	r := &run{Env: env, json: env.Getenv("SIFT_JSON") == "1"}
+	r := &run{Env: env, json: env.Getenv("SIFT_JSON") == "1", withCalendar: true}
 	if len(args) == 0 {
 		args = []string{"review"}
 	}
@@ -108,6 +118,11 @@ func Run(args []string, env Env) int {
 		"status":  r.status,
 		"gate":    r.gate,
 		"block":   r.block,
+		"setup":   r.setup,
+		"confirm": r.confirm,
+		"sync":    r.sync,
+		"log":     r.log,
+		"import":  r.importPunchcard,
 	}
 	cmd, ok := cmds[r.command]
 	if !ok {
@@ -120,8 +135,11 @@ func Run(args []string, env Env) int {
 func (r *run) finish(data any, human func(io.Writer), err error) int {
 	code := exitOK
 	var u usageError
+	var c coded
 	switch {
 	case err == nil:
+	case errors.As(err, &c):
+		code = c.code
 	case errors.As(err, &u):
 		code = exitUsage
 	case errors.Is(err, evidence.ErrBusy):
@@ -130,7 +148,7 @@ func (r *run) finish(data any, human func(io.Writer), err error) int {
 		code = exitInternal
 	}
 	if r.json {
-		e := envelope{V: ContractVersion, OK: err == nil, Outcome: outcomes[code], Command: r.command, Data: data, Events: r.notes}
+		e := envelope{V: ContractVersion, OK: err == nil || code == exitSyncPending, Outcome: outcomes[code], Command: r.command, Data: data, Events: r.notes}
 		if e.Events == nil {
 			e.Events = []string{}
 		}
@@ -143,9 +161,12 @@ func (r *run) finish(data any, human func(io.Writer), err error) int {
 		enc.Encode(e)
 		return code
 	}
-	if err != nil {
+	if err != nil && code != exitSyncPending {
 		fmt.Fprintln(r.Stderr, "sift:", err)
 		return code
+	}
+	if err != nil {
+		defer fmt.Fprintln(r.Stderr, "sift:", err)
 	}
 	if human != nil {
 		human(r.Stdout)
@@ -191,6 +212,12 @@ type Config struct {
 	EventsWin bool     `json:"events_beat_meetings,omitempty"`
 	Projects  []string `json:"projects,omitempty"` // the branch rule takes only these projects' keys
 	Theme     string   `json:"theme,omitempty"`
+	Tracker   string   `json:"tracker,omitempty"` // "jira", or "none" (the default): confirm logs worklogs locally
+	Jira      struct {
+		Site  string `json:"site,omitempty"`
+		Email string `json:"email,omitempty"`
+	} `json:"jira,omitempty"`
+	Email string `json:"email,omitempty"` // yours, to tell your calendar invitations apart
 }
 
 func (r *run) config() (Config, error) {

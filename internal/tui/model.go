@@ -30,6 +30,10 @@ type Input struct {
 type Source interface {
 	Load(day time.Time) (Input, error)
 	Update(day time.Time, change func(*draft.Decisions) error) error
+	// Confirm accepts the day and sends its worklogs, saying what happened.
+	Confirm(day time.Time) (string, error)
+	// Tracker names where confirmed worklogs go ("Jira", or "the local log").
+	Tracker() string
 }
 
 // Model is the review screen's state.
@@ -46,6 +50,7 @@ type Model struct {
 	w, h    int
 	msg     string
 	err     error
+	asking  bool // waiting for y to confirm the day
 }
 
 // New opens the review on day.
@@ -185,8 +190,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.w, m.h = k.Width, k.Height
 	case tea.KeyPressMsg:
 		m.msg = ""
+		if m.asking {
+			m.asking = false
+			if k.String() == "y" {
+				msg, err := m.src.Confirm(m.in.Start)
+				m.msg = msg
+				if err != nil {
+					m.msg = err.Error()
+				}
+				m.load(m.in.Start)
+			} else {
+				m.msg = "Not confirmed."
+			}
+			return m, nil
+		}
 		s, ok := m.selected()
 		switch k.String() {
+		case "c":
+			switch {
+			case m.dr.Confirmed:
+				m.msg = "Already confirmed."
+			case len(m.dr.Sendable()) == 0:
+				m.msg = "Nothing to confirm on this day."
+			default:
+				m.asking = true
+			}
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "up", "k":

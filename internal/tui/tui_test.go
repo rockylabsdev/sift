@@ -88,6 +88,17 @@ func (f *fake) Update(day time.Time, change func(*draft.Decisions) error) error 
 	return nil
 }
 
+func (f *fake) Tracker() string { return "Jira" }
+
+func (f *fake) Confirm(day time.Time) (string, error) {
+	in, _ := f.Load(day)
+	d := draft.Of(in.Day, in.Decisions, 0)
+	return "Confirmed.", f.Update(day, func(dec *draft.Decisions) error {
+		dec.Confirmed = &draft.Confirmed{Worklogs: d.Sendable()}
+		return nil
+	})
+}
+
 func press(m Model, keys ...string) Model {
 	for _, k := range keys {
 		var msg tea.KeyPressMsg
@@ -114,6 +125,17 @@ func frame(m Model) string { return ansi.Strip(m.View().Content) }
 
 func golden(t *testing.T, name, got string) {
 	t.Helper()
+	var w, h int
+	fmtScan(name, &w, &h)
+	lines := strings.Split(got, "\n")
+	if len(lines) > h {
+		t.Errorf("%s: %d lines, taller than %d", name, len(lines), h)
+	}
+	for i, l := range lines {
+		if n := ansi.StringWidth(l); n > w {
+			t.Errorf("%s line %d is %d wide, over %d: %q", name, i+1, n, w, l)
+		}
+	}
 	path := filepath.Join("testdata", name+".golden")
 	if *update {
 		os.MkdirAll("testdata", 0o755)
@@ -201,5 +223,36 @@ func TestOnlyAssignableStretchesAssign(t *testing.T) {
 	m := press(New(newFake(), day0, ""), "t")
 	if !strings.Contains(m.msg, "Only meetings") || len(m.in.Decisions.Assign) != 0 {
 		t.Fatalf("msg %q, assign %v", m.msg, m.in.Decisions.Assign)
+	}
+}
+
+func TestConfirmAsksFirst(t *testing.T) {
+	f := newFake()
+	m := sized(press(New(f, day0, ""), "c"), 120, 36)
+	if !strings.Contains(frame(m), "Confirm Tue 10 Nov: 2 worklogs, 1h 40m to Jira?") {
+		t.Fatalf("no question:\n%s", frame(m))
+	}
+	m = press(m, "n")
+	if m.dr.Confirmed || m.msg != "Not confirmed." {
+		t.Fatalf("any other key cancels: %+v %q", m.dr.Confirmed, m.msg)
+	}
+	m = press(m, "c", "y")
+	if !m.dr.Confirmed || !strings.Contains(frame(m), "Tue 10 Nov · confirmed") {
+		t.Fatalf("y confirms")
+	}
+	if m = press(m, "c"); m.msg != "Already confirmed." {
+		t.Fatalf("msg %q", m.msg)
+	}
+}
+
+// fmtScan reads the WxH at the end of a golden's name.
+func fmtScan(name string, w, h *int) {
+	i := strings.LastIndex(name, "-")
+	ws, hs, _ := strings.Cut(name[i+1:], "x")
+	for _, c := range ws {
+		*w = *w*10 + int(c-'0')
+	}
+	for _, c := range hs {
+		*h = *h*10 + int(c-'0')
 	}
 }

@@ -697,10 +697,21 @@ func (m Model) View() tea.View {
 			}
 		}
 		key := func(k, what string) string { return fg(th.text, k) + fg(th.dim, " "+what+"   ") }
-		keys := " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("+ −", "adjust") + key("[ ]", "day") + key("T", th.Name) + key("q", "quit")
 		status := fg(th.faint, m.in.Meetings+" ")
 		if m.msg != "" {
 			status = fg(th.amber, m.msg+" ")
+		}
+		keys := " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("+ −", "adjust") + key("c", "confirm") + key("[ ]", "day") + key("T", th.Name) + key("q", "quit")
+		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w {
+			keys = " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("+−", "adjust") + key("c", "confirm") + key("[]", "day") + key("q", "quit")
+		}
+		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && m.msg == "" {
+			status = ""
+		}
+		if m.asking {
+			keys = " " + bold(th.text, fmt.Sprintf("Confirm %s: %s, %s to %s?", m.in.Start.Format("Mon 2 Jan"), plural(len(m.dr.Sendable()), "worklog"), dur(m.dr.Total), m.src.Tracker())) +
+				fg(th.dim, "   y confirms · any other key cancels")
+			status = ""
 		}
 		out = append(out, spread(keys, status, m.w))
 	}

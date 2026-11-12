@@ -27,7 +27,7 @@ func (s source) Load(day time.Time) (tui.Input, error) {
 		return tui.Input{}, err
 	}
 	return tui.Input{Start: l.Start, Events: l.Events, Day: l.Day, Decisions: l.Decisions,
-		Round: l.Config.Round, IdleGap: l.Config.IdleGap, Meetings: "no calendar connected"}, nil
+		Round: l.Config.Round, IdleGap: l.Config.IdleGap, Meetings: calendarNote(l.Calendar)}, nil
 }
 
 func (s source) Update(day time.Time, change func(*draft.Decisions) error) error {
@@ -37,6 +37,30 @@ func (s source) Update(day time.Time, change func(*draft.Decisions) error) error
 	}
 	_, err = draft.Store{Dir: dir}.Update(day.Format("2006-01-02"), change)
 	return err
+}
+
+func (s source) Confirm(day time.Time) (string, error) {
+	c, err := s.r.confirmDay(day.Format("2006-01-02"))
+	total := 0
+	for _, w := range c.Worklogs {
+		total += w.Minutes
+	}
+	msg := fmt.Sprintf("Confirmed: %s, %s.", plural(len(c.Worklogs), "worklog"), dur(total))
+	if c.Sent > 0 {
+		msg = fmt.Sprintf("Confirmed: %s sent, %s.", plural(c.Sent, "worklog"), dur(total))
+	}
+	if err != nil {
+		return msg + " " + err.Error() + ".", nil
+	}
+	return msg, nil
+}
+
+func (s source) Tracker() string {
+	cfg, err := s.r.config()
+	if err == nil && cfg.Tracker == "jira" {
+		return "Jira"
+	}
+	return "the local log"
 }
 
 // waiting lists the days before today with evidence that are not confirmed.

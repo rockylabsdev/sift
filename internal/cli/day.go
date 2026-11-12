@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rockylabsdev/sift/internal/calendar"
 	"github.com/rockylabsdev/sift/internal/derive"
 	"github.com/rockylabsdev/sift/internal/draft"
 	"github.com/rockylabsdev/sift/internal/evidence"
@@ -93,14 +94,16 @@ type Loaded struct {
 	Decisions draft.Decisions
 	Config    Config
 	Store     draft.Store
+	Calendar  calendar.Day
 }
 
 // Draft is the CLI's view of a day's draft.
 type Draft struct {
 	draft.Draft
-	Stretches []derive.Stretch `json:"stretches"`
-	Meetings  string           `json:"meetings"` // where meetings came from
-	Settings  Config           `json:"settings"`
+	Stretches []derive.Stretch   `json:"stretches"`
+	Meetings  string             `json:"meetings"` // where meetings came from
+	Skipped   []calendar.Skipped `json:"skipped"`  // calendar events left out, and why
+	Settings  Config             `json:"settings"`
 }
 
 // load reads, derives and decides the day date ("" for today).
@@ -135,7 +138,17 @@ func (r *run) load(date string) (Loaded, error) {
 	for _, b := range l.Decisions.Blocks {
 		set.Blocks = append(set.Blocks, derive.Block{From: b.From, To: b.To, Ticket: b.Ticket})
 	}
-	l.Day = derive.For(start, in, nil, set)
+	var meetings []derive.Meeting
+	if l.Decisions.Confirmed == nil && r.withCalendar {
+		l.Calendar = r.meetings(cfg, start)
+		for _, m := range l.Calendar.Meetings {
+			meetings = append(meetings, derive.Meeting{From: m.From, To: m.To, Title: m.Title})
+		}
+	}
+	if r.demoMeetings != nil {
+		meetings = r.demoMeetings(start)
+	}
+	l.Day = derive.For(start, in, meetings, set)
 	return l, nil
 }
 
@@ -155,7 +168,7 @@ func (r *run) draft(args []string) (any, func(io.Writer), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	dr := Draft{Draft: draft.Of(l.Day, l.Decisions, l.Config.Round), Stretches: nonNil(l.Day.Stretches), Meetings: "no calendar connected", Settings: l.Config}
+	dr := Draft{Draft: draft.Of(l.Day, l.Decisions, l.Config.Round), Stretches: nonNil(l.Day.Stretches), Meetings: calendarNote(l.Calendar), Skipped: nonNil(l.Calendar.Skipped), Settings: l.Config}
 	if md {
 		r.json = false
 	}
@@ -204,7 +217,10 @@ func writeDraft(w io.Writer, d Draft, loc *time.Location, md bool) {
 		fmt.Fprintf(w, "  %-10s %8s   from %s%s\n", wl.Ticket, dur(wl.Minutes), clock(wl.Started), note)
 	}
 	fmt.Fprintf(w, "  %-10s %8s   %s\n\n", "ready", dur(d.Total), plural(len(d.Worklogs), "worklog"))
-	fmt.Fprintf(w, "  unassigned %8s   gaps %s · no ticket %s · meetings: %s\n", dur(un), dur(d.Unassigned.Gaps), dur(d.Unassigned.Ticketless), d.Meetings)
+	fmt.Fprintf(w, "  unassigned %8s   meetings %s · gaps %s · no ticket %s\n  %s\n", dur(un), dur(d.Unassigned.Meetings), dur(d.Unassigned.Gaps), dur(d.Unassigned.Ticketless), d.Meetings)
+	for _, sk := range d.Skipped {
+		fmt.Fprintf(w, "  left out    %s–%s  %s (%s)\n", clock(sk.From), clock(sk.To), sk.Title, sk.Reason)
+	}
 	if len(d.Stretches) == 0 {
 		return
 	}
