@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The test binary doubles as a fake `security`, so the Keychain path runs
@@ -68,7 +69,9 @@ func fakeSecurity(dir string, args []string) int {
 func fakeKeychain(t *testing.T) (*Keychain, string) {
 	dir := t.TempDir()
 	t.Setenv("FAKE_SECURITY", dir)
-	return &Keychain{Bin: os.Args[0], Service: "sift-test"}, dir
+	// The test binary starts slowly under -race, so it gets more than the
+	// real binary's second.
+	return &Keychain{Bin: os.Args[0], Service: "sift-test", Timeout: 20 * time.Second}, dir
 }
 
 const name, value = "jira-token:me@example.com", "ATATT3xFfGF0-a_b=c+d/e 1"
