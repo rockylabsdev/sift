@@ -1,5 +1,64 @@
 # Sift
-A terminal worklog drafter
+A terminal worklog drafter. Your work, accounted for.
+
+Sift records evidence as you work, derives your day from it, and drafts one worklog per ticket for you to check and send. Nothing is started or stopped.
+
+## Install
+
+```sh
+brew install rockylabsdev/tap/sift
+claude plugin marketplace add rockylabsdev/sift
+claude plugin install sift@sift
+```
+
+The plugin is pinned to the release of the binary, so update both together: `brew upgrade sift`, then `claude plugin update sift@sift`. Without Homebrew, `go install github.com/rockylabsdev/sift/cmd/sift@latest` works too.
+
+Each prompt you type in Claude Code is now an event for the ticket its directory names: a `.sift` file (first line, e.g. `PUN-142`), else the branch name. An agent's own activity is never counted.
+
+Try it before any of that with `sift demo`, which opens the review on a seeded fake day and keeps nothing.
+
+## Test a checkout
+
+```sh
+scripts/sandbox.sh                # a shell with this checkout's sift and plugin, and throwaway data
+scripts/sandbox.sh sift demo      # or one command
+SIFT_SANDBOX=~/sift-try scripts/sandbox.sh   # keep the sandbox between runs
+go test ./...
+```
+
+Inside the sandbox, `claude` loads this checkout's plugin, and `sift setup jira` or `sift setup calendar` connect real accounts without touching your everyday config. The sandbox keeps secrets in its own config directory, never in the Keychain, so your real token and calendar address are never overwritten.
+
+## Release
+
+`scripts/release.sh 0.2.0` (or `0.2.0-rc.1` for a pre-release that skips the tap) pins the plugin to the tag, commits and tags on `main`. Pushing the tag runs CI, then GoReleaser publishes the tarballs and the Homebrew formula. It needs a `rockylabsdev/homebrew-tap` repository and a `HOMEBREW_TAP_GITHUB_TOKEN` secret: a fine-grained token with Contents read and write on that repository only.
+
+## Use
+
+```sh
+sift                   # review the earliest day waiting, else today
+sift status            # today's totals and the days waiting
+sift confirm           # accept a day: one worklog per ticket, sent
+sift log               # this week's worklogs
+```
+
+In the review, `↑↓` selects a stretch, `t` assigns a meeting, gap or ticketless time to a ticket, `+ −` adjust a ticket by 5 minutes, `e` inspects a stretch (its events, where each ticket came from, and silences close to the idle gap), `c` confirms, `[ ]` change day and `T` changes theme (Graphite, Dusk, Paper).
+
+Work no collector saw: `sift block PUN-142 10:00-11:30`. In Claude Code, `/sift` shows the draft and confirms it with your yes. An agent cannot confirm a day on its own: `sift confirm` from an agent only proposes the draft, and the plugin puts `sift confirm --yes` to you.
+
+## Connect
+
+```sh
+sift setup jira --site acme.atlassian.net --email you@acme.com   # reads the API token from stdin
+sift setup calendar --email you@acme.com                         # reads the iCal subscription address from stdin
+sift setup none                                                  # no tracker: confirmed worklogs stay local
+sift import punchcard                                            # keep punchcard's worklog history in sift log
+```
+
+Secrets go to the macOS Keychain, else a 0600 file under `~/.config/sift/secrets`. Meetings leave out all-day events, declined and cancelled invitations, events marked free, and events with no one else invited; `sift draft` lists what it left out and why.
+
+Settings live in `~/.config/sift/config.json`: `idle_gap_minutes` (default 10), `round_minutes` (0, 5 or 15), `events_beat_meetings`, `projects` (the branch rule takes only these projects' keys) and `theme`. The event format is a public contract, described in [docs/evidence.md](docs/evidence.md).
+
+The design prototype the review grew from is still in `cmd/prototype-daystrip`.
 
 ## Claude Code skills
 

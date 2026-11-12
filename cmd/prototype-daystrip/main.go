@@ -216,7 +216,8 @@ type segment struct {
 type model struct {
 	d        *day
 	w, h     int
-	events   bool // the audit view is open in place of the lower panels
+	events   int // 0 closed; 1 the selected stretch in context; 2 also every event
+	theme    int
 	cur      int
 	adjust   []int // minutes added by hand per ticket
 	meetTo   []int // ticket a meeting is logged to, or none
@@ -224,7 +225,15 @@ type model struct {
 	segments []segment
 }
 
-func newModel() model { return modelFor(derive(seedDay())) }
+func newModel() model {
+	m := modelFor(derive(seedDay()))
+	for i, th := range themes {
+		if strings.EqualFold(os.Getenv("SIFT_THEME"), th.name) {
+			m.theme = i
+		}
+	}
+	return m
+}
 
 func modelFor(d *day) model {
 	m := model{d: d, w: 120, h: 36, adjust: make([]int, len(tickets)), meetTo: make([]int, len(meetings)), gapTo: make([]int, len(d.gaps))}
@@ -269,19 +278,39 @@ func (m model) ownedIn(t, from, to int) (n int) {
 	return n
 }
 
-func (m model) total(t int) int {
-	n := m.d.minutesOf(t) + m.adjust[t]
-	for i, to := range m.meetTo {
-		if to == t {
-			n += meetings[i].to - meetings[i].from
+// counted is the minutes the day strip credits to ticket t: one owner per
+// minute, so overlapping meetings can never count twice.
+func (m model) counted(t int) int { return m.countedAll()[t] }
+
+// countedAll is counted for every ticket in one pass over the day.
+func (m model) countedAll() []int {
+	n := make([]int, len(tickets))
+	for mm := range dayMinutes {
+		if o := m.eff(mm); isTicket(o) {
+			n[o]++
 		}
 	}
-	for i, to := range m.gapTo {
-		if to == t {
-			n += m.d.gaps[i].to - m.d.gaps[i].from
-		}
+	return n
+}
+
+func (m model) total(t int) int { return m.totals()[t] }
+
+// totals is every ticket's draft total: counted plus adjustment, floored.
+func (m model) totals() []int {
+	n := m.countedAll()
+	for t := range n {
+		n[t] = max(n[t]+m.adjust[t], 0)
 	}
-	return max(n, 0)
+	return n
+}
+
+// byHand is what each hand adjustment actually changed, after the floor.
+func (m model) byHand() []int {
+	n := m.countedAll()
+	for t := range n {
+		n[t] = max(n[t]+m.adjust[t], 0) - n[t]
+	}
+	return n
 }
 
 func (m model) Init() tea.Cmd { return nil }
@@ -310,14 +339,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "right", "l", "down", "j":
 			m.cur = min(m.cur+1, len(m.segments)-1)
 		case "e":
-			m.events = !m.events
+			m.events = (m.events + 1) % 3
+		case "esc":
+			m.events = 0
+		case "T":
+			m.theme = (m.theme + 1) % len(themes)
 		case "+", "=":
 			if isTicket(o) {
 				m.adjust[o] += 5
 			}
 		case "-":
 			if isTicket(o) {
-				m.adjust[o] -= 5
+				m.adjust[o] = max(m.adjust[o]-5, -m.counted(o))
 			}
 		case "t", "enter":
 			switch {
@@ -348,40 +381,52 @@ func (c rgb) mix(o rgb, t float64) rgb {
 
 func (c rgb) String() string { return fmt.Sprintf("#%02x%02x%02x", int(c.r), int(c.g), int(c.b)) }
 
-var (
-	hue    = []rgb{hex("#C8FF00"), hex("#4DD0E1"), hex("#C792EA")}
-	amber  = hex("#E6B450")
-	text   = hex("#C8C8C8")
-	dim    = hex("#7A7A7A")
-	faint  = hex("#3C3C3C")
-	ink    = hex("#101010")
-	selBg  = hex("#2B2B2B")
-	meetBg = hex("#2A2212")
-	edges  = []rgb{hex("#5F7A2E"), hex("#3F6F78"), hex("#6B5A86"), hex("#7A6A3A")}
-)
+// A theme gives every colour one job. Ticket hues belong to ticket labels and
+// their marks; amber marks meetings and things needing attention, always next
+// to words; borders are neutral and only the focused panel's is emphasised.
+type theme struct {
+	name                 string
+	bg, text, muted, dim rgb
+	faint, border, focus rgb
+	sel, amber           rgb
+	hue                  []rgb
+}
 
-func fg(c rgb, s string) string {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(c.String())).Render(s)
+var themes = []theme{
+	{"graphite", hex("#181C1B"), hex("#E4DFD3"), hex("#B4B0A5"), hex("#878B84"),
+		hex("#343A38"), hex("#3A413E"), hex("#8C978E"), hex("#232B28"), hex("#D4B078"),
+		[]rgb{hex("#B5C99B"), hex("#8FBDC1"), hex("#B5A5CC")}},
+	{"dusk", hex("#1B1C25"), hex("#E1E1EA"), hex("#B0B1C2"), hex("#878999"),
+		hex("#33354A"), hex("#383A4C"), hex("#868AA2"), hex("#272939"), hex("#D8B682"),
+		[]rgb{hex("#AABCE0"), hex("#91BEB3"), hex("#C3A6C9")}},
+	{"paper", hex("#F2EFE7"), hex("#2B2A26"), hex("#55534C"), hex("#77746A"),
+		hex("#D6D2C6"), hex("#C9C5B8"), hex("#8C887B"), hex("#E3E5D8"), hex("#866119"),
+		[]rgb{hex("#526D3F"), hex("#306C74"), hex("#765A89")}},
 }
-func bold(c rgb, s string) string {
-	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(c.String())).Render(s)
-}
+
+var p = &themes[0]
+
+func style(c rgb) lipgloss.Style  { return lipgloss.NewStyle().Foreground(lipgloss.Color(c.String())) }
+func fg(c rgb, s string) string   { return style(c).Render(s) }
+func bold(c rgb, s string) string { return style(c).Bold(true).Render(s) }
 func on(c rgb, bg *rgb, s string) string {
-	st := lipgloss.NewStyle().Foreground(lipgloss.Color(c.String()))
+	st := style(c)
 	if bg != nil {
 		st = st.Background(lipgloss.Color(bg.String()))
 	}
 	return st.Render(s)
 }
 
-func colorOf(o int) rgb {
+// tone is the colour an owner's marks take: its ticket's hue, amber for a
+// meeting nobody has assigned, dim for silence.
+func tone(o int) rgb {
 	switch {
+	case isTicket(o):
+		return p.hue[o]
 	case o >= meet:
-		return amber
-	case o >= 0:
-		return hue[o]
+		return p.amber
 	}
-	return dim
+	return p.dim
 }
 
 func dur(n int) string {
@@ -391,6 +436,13 @@ func dur(n int) string {
 	return fmt.Sprintf("%dh %02dm", n/60, n%60)
 }
 
+func signed(n int) string {
+	if n < 0 {
+		return "-" + dur(-n)
+	}
+	return "+" + dur(n)
+}
+
 func clock(m int) string { return fmt.Sprintf("%02d:%02d", (m+dayStart)/60, (m+dayStart)%60) }
 
 func pad(s string, w int) string {
@@ -398,13 +450,34 @@ func pad(s string, w int) string {
 	return s + strings.Repeat(" ", max(w-lipgloss.Width(s), 0))
 }
 
-// box draws a rounded box with btop-style titles set into the top border.
-func box(n int, title, right string, w, h int, body []string) []string {
-	e := edges[n-1]
-	t := fg(e, "┐") + bold(hue[0], string([]rune("¹²³⁴")[n-1])) + bold(text, title) + fg(e, "┌")
+func spread(left, right string, w int) string {
+	return left + strings.Repeat(" ", max(w-lipgloss.Width(left)-lipgloss.Width(right), 1)) + right
+}
+
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return "1 " + word
+	}
+	return fmt.Sprintf("%d %ss", n, word)
+}
+
+// box draws a panel with its number and title set into the top border.
+func box(n int, title, right string, focused bool, w, h int, body []string) []string {
+	e := p.border
+	if focused {
+		e = p.focus
+	}
+	t := " " + fg(p.dim, fmt.Sprint(n)) + " " + bold(p.text, title) + " "
 	r := ""
 	if right != "" {
-		r = fg(e, "┐") + right + fg(e, "┌")
+		r = " " + right + " "
 	}
 	fill := w - 4 - lipgloss.Width(t) - lipgloss.Width(r)
 	out := []string{fg(e, "╭─") + t + fg(e, strings.Repeat("─", max(fill, 0))) + r + fg(e, "─╮")}
@@ -416,131 +489,6 @@ func box(n int, title, right string, w, h int, body []string) []string {
 		out = append(out, fg(e, "│")+pad(line, w-2)+fg(e, "│"))
 	}
 	return append(out, fg(e, "╰"+strings.Repeat("─", w-2)+"╯"))
-}
-
-// meter is a btop bar: filled cells run along a gradient, the rest are faint.
-func meter(frac float64, w int, c rgb) string {
-	var b strings.Builder
-	n := int(frac*float64(w) + 0.5)
-	for i := 0; i < w; i++ {
-		if i < n {
-			b.WriteString(fg(c.mix(ink, 0.55).mix(c, float64(i)/float64(max(w-1, 1))*1.6), "■"))
-		} else {
-			b.WriteString(fg(faint, "■"))
-		}
-	}
-	return b.String()
-}
-
-// --- ¹ day: braille lanes over derived tracks ---
-
-const labelW = 10
-
-func (m model) dayBox(w, rows int) []string {
-	d := m.d
-	g := w - 2 - labelW - 1 // graph columns
-	span := func(c int) (int, int) { return c * dayMinutes / g, (c + 1) * dayMinutes / g }
-	sel := m.segments[m.cur]
-	bgAt := func(c int) *rgb {
-		a, b := span(c)
-		mid := (a + b) / 2
-		switch {
-		case mid >= sel.from && mid < sel.to:
-			return &selBg
-		case d.owner[mid] >= meet:
-			return &meetBg
-		}
-		return nil
-	}
-
-	// smoothed event density per ticket, two samples per column
-	n := 2 * g
-	val := make([][]float64, len(tickets))
-	peak := 1.0
-	for t := range tickets {
-		val[t] = make([]float64, n)
-		for s := 0; s < n; s++ {
-			at := float64(s) * dayMinutes / float64(n)
-			for _, e := range d.events {
-				if dist := abs(float64(e.min) - at); e.ticket == t && dist < 6 {
-					val[t][s] += 1 - dist/6
-				}
-			}
-			peak = max(peak, val[t][s])
-		}
-	}
-
-	var out []string
-	axis := []rune(strings.Repeat(" ", g))
-	for hr := 0; hr < dayMinutes/60; hr++ {
-		for i, r := range fmt.Sprintf("%02d", hr+dayStart/60) {
-			axis[hr*60*g/dayMinutes+i] = r
-		}
-	}
-	out = append(out, strings.Repeat(" ", labelW)+fg(dim, string(axis)))
-
-	left := []rune{0x40, 0x04, 0x02, 0x01} // braille dots, bottom to top
-	rightDots := []rune{0x80, 0x20, 0x10, 0x08}
-	for t, tk := range tickets {
-		for r := 0; r < rows; r++ {
-			label := strings.Repeat(" ", labelW)
-			switch r {
-			case 0:
-				label = pad(" "+bold(hue[t], tk.key), labelW)
-			}
-			var b strings.Builder
-			for c := 0; c < g; c++ {
-				ch := rune(0x2800)
-				top := 0.0
-				for side, dots := range [][]rune{left, rightDots} {
-					v := val[t][2*c+side] / peak
-					top = max(top, v)
-					lvl := int(v*float64(4*rows) + 0.99)
-					for i := 0; i < min(max(lvl-(rows-1-r)*4, 0), 4); i++ {
-						ch |= dots[i]
-					}
-				}
-				if ch == 0x2800 {
-					ch = ' '
-				}
-				b.WriteString(on(hue[t].mix(ink, 0.6).mix(hue[t], top*1.5), bgAt(c), string(ch)))
-			}
-			out = append(out, label+b.String())
-		}
-		// counted time: a solid bar wherever this ticket is credited, with
-		// its total beside it so the number and the bar read as one thing
-		var b strings.Builder
-		for c := 0; c < g; c++ {
-			a, z := span(c)
-			own := 0
-			for mm := a; mm < z; mm++ {
-				if m.eff(mm) == t {
-					own++
-				}
-			}
-			if own*2 >= z-a {
-				b.WriteString(on(hue[t], bgAt(c), "▀"))
-			} else {
-				b.WriteString(on(faint, bgAt(c), " "))
-			}
-		}
-		out = append(out, pad(" "+fg(text, dur(m.total(t))), labelW)+b.String())
-	}
-
-	// unlogged: meetings and silences nobody has assigned
-	var b strings.Builder
-	for c := 0; c < g; c++ {
-		a, z := span(c)
-		switch e := m.eff((a + z) / 2); {
-		case e >= meet:
-			b.WriteString(on(amber, bgAt(c), "▀"))
-		case e == gap:
-			b.WriteString(on(dim, bgAt(c), "░"))
-		default:
-			b.WriteString(on(faint, bgAt(c), " "))
-		}
-	}
-	return append(out, pad(" "+fg(dim, "unlogged"), labelW)+b.String())
 }
 
 // eff is who a minute is credited to once meetings and gaps are assigned.
@@ -559,123 +507,350 @@ func (m model) eff(mm int) int {
 	return o
 }
 
-func abs(x float64) float64 {
-	if x < 0 {
-		return -x
+func (m model) unassigned() (meetOff, gapOff int) {
+	for i, mt := range meetings {
+		if m.meetTo[i] == none {
+			meetOff += mt.to - mt.from
+		}
 	}
-	return x
+	for i, gp := range m.d.gaps {
+		if m.gapTo[i] == none {
+			gapOff += gp.to - gp.from
+		}
+	}
+	return meetOff, gapOff
 }
 
-// --- ² stretches: the selector ---
-
-func (m model) assigned(to int) string {
-	if to == none {
-		return fg(dim, "not logged")
+func (m model) toSend() (n int) {
+	for t := range tickets {
+		n += m.total(t)
 	}
-	return fg(hue[to], "→ "+tickets[to].key)
+	return n
+}
+
+// --- 1 day: event density over counted time ---
+
+const labelW = 10
+
+// dayHeight is the day box's height for evRows rows of density per lane.
+func dayHeight(evRows int, sep bool) int {
+	h := 2 + 1 + len(tickets)*(evRows+1) + 3 // borders, axis, lanes, other, selection, summary
+	if sep {
+		h += len(tickets) - 1
+	}
+	return h
+}
+
+func (m model) dayBox(w, evRows int, sep bool) []string {
+	d := m.d
+	g := w - 2 - labelW - 1
+	span := func(c int) (int, int) { return c * dayMinutes / g, (c + 1) * dayMinutes / g }
+	sel := m.segments[m.cur]
+	inSel := func(c int) bool {
+		a, b := span(c)
+		return (a+b)/2 >= sel.from && (a+b)/2 < sel.to
+	}
+	bgAt := func(c int) *rgb {
+		if inSel(c) {
+			return &p.sel
+		}
+		return nil
+	}
+
+	// event density, two samples per column, on one scale shared by every
+	// lane so a taller lane means more events, never more credit
+	n := 2 * g
+	val := make([][]float64, len(tickets))
+	peak := 1.0
+	for t := range tickets {
+		val[t] = make([]float64, n)
+		for s := 0; s < n; s++ {
+			at := float64(s) * dayMinutes / float64(n)
+			for _, e := range d.events {
+				if dist := abs(float64(e.min) - at); e.ticket == t && dist < 6 {
+					val[t][s] += 1 - dist/6
+				}
+			}
+			peak = max(peak, val[t][s])
+		}
+	}
+
+	axis := []rune(strings.Repeat(" ", g))
+	for hr := 0; hr < dayMinutes/60; hr += 2 {
+		for i, r := range fmt.Sprintf("%02d", hr+dayStart/60) {
+			axis[hr*60*g/dayMinutes+i] = r
+		}
+	}
+	out := []string{strings.Repeat(" ", labelW) + fg(p.dim, string(axis))}
+
+	left := []rune{0x40, 0x04, 0x02, 0x01} // braille dots, bottom to top
+	rightDots := []rune{0x80, 0x20, 0x10, 0x08}
+	for t, tk := range tickets {
+		if t > 0 && sep {
+			out = append(out, "")
+		}
+		for r := 0; r < evRows; r++ {
+			label := ""
+			switch r {
+			case 0:
+				label = " " + bold(p.hue[t], tk.key)
+			case 1:
+				label = " " + fg(p.text, dur(m.total(t)))
+			}
+			var b strings.Builder
+			for c := 0; c < g; c++ {
+				ch := rune(0x2800)
+				for side, dots := range [][]rune{left, rightDots} {
+					lvl := int(val[t][2*c+side]/peak*float64(4*evRows) + 0.99)
+					for i := 0; i < min(max(lvl-(evRows-1-r)*4, 0), 4); i++ {
+						ch |= dots[i]
+					}
+				}
+				if ch == 0x2800 {
+					ch = ' '
+				}
+				b.WriteString(on(p.hue[t], bgAt(c), string(ch)))
+			}
+			out = append(out, pad(label, labelW)+b.String())
+		}
+		// counted time is the solid baseline, whatever the ticket's hue
+		var b strings.Builder
+		for c := 0; c < g; c++ {
+			a, z := span(c)
+			own := 0
+			for mm := a; mm < z; mm++ {
+				if m.eff(mm) == t {
+					own++
+				}
+			}
+			if own*2 >= z-a {
+				b.WriteString(on(p.hue[t], bgAt(c), "━"))
+			} else {
+				b.WriteString(on(p.faint, bgAt(c), "─"))
+			}
+		}
+		out = append(out, strings.Repeat(" ", labelW)+b.String())
+	}
+
+	// meetings and gaps get their own row: a patterned band with its name,
+	// in amber until it is assigned, then in the ticket's hue
+	other := make([]string, g)
+	for c := range other {
+		a, z := span(c)
+		switch o, e := d.owner[(a+z)/2], m.eff((a+z)/2); {
+		case o >= meet:
+			other[c] = on(tone(e), bgAt(c), "▰")
+		case o == gap:
+			other[c] = on(tone(e), bgAt(c), "░")
+		default:
+			other[c] = on(p.faint, bgAt(c), " ")
+		}
+	}
+	for i, mt := range meetings {
+		c0 := mt.from*g/dayMinutes + 1
+		room := mt.to*g/dayMinutes - c0 - 1
+		name := []rune(mt.title)
+		if room < 3 {
+			continue
+		}
+		if len(name) > room {
+			name = append(name[:room-1], '…')
+		}
+		c := tone(m.eff(mt.from))
+		if m.meetTo[i] == none {
+			c = p.amber
+		}
+		for j, r := range name {
+			other[c0+j] = on(c, bgAt(c0+j), string(r))
+		}
+	}
+	out = append(out, pad(" "+fg(p.dim, "other"), labelW)+strings.Join(other, ""))
+
+	// the selection: a quiet band above, and its edges marked here
+	a := sel.from * g / dayMinutes
+	z := max((sel.to*g+dayMinutes-1)/dayMinutes-1, a)
+	bracket := "↑"
+	if z > a {
+		bracket = "└" + strings.Repeat("─", z-a-1) + "┘"
+	}
+	when := clock(sel.from) + "–" + clock(sel.to)
+	mark := strings.Repeat(" ", a) + bracket + " " + when
+	if z+2+lipgloss.Width(when) > g {
+		mark = strings.Repeat(" ", max(a-lipgloss.Width(when)-1, 0)) + when + " " + bracket
+	}
+	out = append(out, strings.Repeat(" ", labelW)+fg(p.focus, mark))
+
+	meetOff, gapOff := m.unassigned()
+	sum := " " + fg(p.muted, "unassigned") + "  " + fg(p.amber, "▰ meetings "+dur(meetOff)) + fg(p.dim, "  ·  ") + fg(p.muted, "░ gaps "+dur(gapOff))
+	note := fg(p.dim, "⣿ event density, one scale  ") + fg(p.muted, "━ counted ")
+	return append(out, spread(sum, note, w-2))
+}
+
+// --- 2 stretches: the selector ---
+
+// stretchCols lays out the table for an inner width: the name column takes
+// whatever is left after the times and one column per ticket plus unassigned.
+func stretchCols(iw int) (whatW, cw, lastW int) {
+	cw, lastW = 8, 11
+	return max(iw-1-11-3-cw*len(tickets)-lastW-1, 4), cw, lastW
+}
+
+func (m model) assignedTo(to int) string {
+	if to == none {
+		return fg(p.amber, "unassigned")
+	}
+	return fg(p.muted, "assigned to ") + bold(p.hue[to], tickets[to].key)
+}
+
+func (m model) eventsIn(s segment) (evs []event) {
+	for _, e := range m.d.events {
+		if e.min >= s.from && e.min < s.to {
+			evs = append(evs, e)
+		}
+	}
+	return evs
 }
 
 func (m model) stretchBox(w, h int) []string {
-	// A matrix: one row per stretch, one column per ticket, so a stretch
-	// shared by several tickets never needs a label that can be cut, and
-	// each column adds up to its ticket's total. Numbers sit at the right
-	// edge; what a meeting or gap is takes whatever width is left, and the
-	// selected row is spelled out in full on the last line.
-	const cw = 9
+	// One row per stretch, one column per ticket, so a stretch shared by
+	// several tickets needs no label that can be cut, and each column adds
+	// up to its ticket's total. The selected row is spelled out at the foot.
 	iw := w - 2
-	whatW := iw - 1 - 11 - 3 - cw*(len(tickets)+1) - 1
-	what := func(s string) string {
-		if whatW < 6 {
-			return ""
-		}
-		return pad(s, whatW)
-	}
-	cell := func(n int, c rgb) string {
+	whatW, cw, lastW := stretchCols(iw)
+	cell := func(n, width int, c rgb) string {
 		if n == 0 {
-			return fg(faint, fmt.Sprintf("%*s", cw, "·"))
+			return fg(p.faint, fmt.Sprintf("%*s", width, "·"))
 		}
-		return fg(c, fmt.Sprintf("%*s", cw, dur(n)))
+		return fg(c, fmt.Sprintf("%*s", width, dur(n)))
 	}
-	head := " " + fg(dim, fmt.Sprintf("%-11s", "stretch")) + "   " + what("")
+	head := " " + fg(p.dim, fmt.Sprintf("%-11s", "time")) + "   " + pad("", whatW)
 	for t, tk := range tickets {
-		head += bold(hue[t], fmt.Sprintf("%*s", cw, tk.key))
+		head += bold(p.hue[t], fmt.Sprintf("%*s", cw, tk.key))
 	}
-	head += fg(dim, fmt.Sprintf("%*s", cw, "unlogged"))
+	head += fg(p.dim, fmt.Sprintf("%*s", lastW, "unassigned"))
 	body := []string{head}
 	var rows []string
-	offSum, detail := 0, ""
+	offSum := 0
+	var title, detail string
 	for i, s := range m.segments {
 		per := make([]int, len(tickets))
-		off, mark, name, more := 0, " ", "", ""
-		n := 0
-		for _, e := range m.d.events {
-			if e.min >= s.from && e.min < s.to {
-				n++
-			}
-		}
+		off, mark, name := 0, " ", ""
+		evs := m.eventsIn(s)
 		switch o := s.owners[0]; {
 		case o >= meet:
-			mt := meetings[o-meet]
-			mark, name = fg(amber, "▀"), fg(amber, mt.title)
-			more = fg(amber, mt.title) + fg(dim, " · meeting, ") + m.assigned(m.meetTo[o-meet])
-			if to := m.meetTo[o-meet]; to != none {
-				per[to] = s.to - s.from
-			} else {
+			mt, to := meetings[o-meet], m.meetTo[o-meet]
+			mark, name = fg(tone(m.eff(s.from)), "▰"), fg(p.text, mt.title)
+			if to == none {
+				mark = fg(p.amber, "▰")
 				off = s.to - s.from
-				if mt.suggest != none {
-					more += fg(dim, " · its title names "+tickets[mt.suggest].key)
-				}
+			} else {
+				per[to] = s.to - s.from
+			}
+			title = fg(p.amber, mt.title) + fg(p.text, " · "+dur(s.to-s.from))
+			more := fg(p.muted, "meeting · ") + m.assignedTo(to)
+			if to == none && mt.suggest != none {
+				more += fg(p.dim, " · its title names ") + fg(p.hue[mt.suggest], tickets[mt.suggest].key)
 			}
 			if mt.during > 0 {
-				more += fg(dim, fmt.Sprintf(" · %d event fired during it", mt.during))
+				more += fg(p.amber, " · "+plural(mt.during, "event")+" fired during it")
+			}
+			if i == m.cur {
+				detail = more
 			}
 		case o == gap:
-			mark, name = fg(dim, "░"), fg(dim, "no evidence")
-			more = fg(dim, "no evidence for "+dur(s.to-s.from)+", ") + m.assigned(m.gapTo[s.gapIdx])
-			if to := m.gapTo[s.gapIdx]; to != none {
-				per[to] = s.to - s.from
-			} else {
+			to := m.gapTo[s.gapIdx]
+			mark, name = fg(tone(m.eff(s.from)), "░"), fg(p.muted, "gap")
+			if to == none {
 				off = s.to - s.from
+			} else {
+				per[to] = s.to - s.from
+			}
+			title = fg(p.text, "Gap · "+dur(s.to-s.from))
+			if i == m.cur {
+				detail = fg(p.muted, "no evidence · ") + m.assignedTo(to)
 			}
 		default:
 			var parts []string
 			for _, t := range s.owners {
 				per[t] = m.ownedIn(t, s.from, s.to)
-				parts = append(parts, fg(hue[t], tickets[t].key)+" "+fg(text, dur(per[t])))
+				parts = append(parts, fg(p.hue[t], tickets[t].key)+" "+fg(p.text, dur(per[t])))
 			}
-			more = strings.Join(parts, fg(dim, " · ")) + fg(dim, fmt.Sprintf(" · from %d events", n))
+			name = fg(p.dim, plural(len(evs), "event"))
+			title = fg(p.text, clock(s.from)+"–"+clock(s.to)+" · "+dur(s.to-s.from))
+			if i == m.cur {
+				detail = strings.Join(parts, fg(p.dim, " · ")) + fg(p.dim, " · from "+plural(len(evs), "event"))
+			}
 		}
 		offSum += off
-		row := " " + fg(text, clock(s.from)+"–"+clock(s.to)) + " " + mark + " " + what(name)
+		row := clock(s.from) + "–" + clock(s.to) + " " + mark + " " + pad(name, whatW)
 		for t := range tickets {
-			row += cell(per[t], hue[t])
+			row += cell(per[t], cw, p.text)
 		}
-		row += cell(off, dim)
+		row += cell(off, lastW, p.amber)
 		if i == m.cur {
-			row = lipgloss.NewStyle().Background(lipgloss.Color(selBg.String())).Render(pad(bold(hue[0], "›")+row[1:], iw))
-			detail = more
+			row = on(p.text, &p.sel, pad(bold(p.text, "›")+fg(p.text, row), iw))
+		} else {
+			row = " " + fg(p.text, row)
+		}
+		if i == m.cur {
+			detail = title + "\n" + detail
 		}
 		rows = append(rows, row)
 	}
-	room := h - 2 - 5 // header, rule, total, blank, detail
-	if first := m.cur - room + 1; first > 0 {
-		rows = rows[first:]
+	tot := m.totals()
+	handRow := m.handRow(m.byHand(), cw, whatW, lastW)
+	room := h - 2 - 6 // header, rule, total, blank, two detail lines
+	if handRow != "" {
+		room--
 	}
+	first := max(m.cur-room+1, 0)
+	rows = rows[first:]
+	more := 0
 	if len(rows) > room {
+		more = len(rows) - room
 		rows = rows[:room]
 	}
 	body = append(body, rows...)
-	foot := " " + fg(dim, fmt.Sprintf("%-11s", "total")) + "   " + what("")
-	for t := range tickets {
-		foot += bold(hue[t], fmt.Sprintf("%*s", cw, dur(m.total(t))))
+	if handRow != "" {
+		body = append(body, handRow)
 	}
-	foot += fg(dim, fmt.Sprintf("%*s", cw, dur(offSum)))
-	body = append(body, " "+fg(faint, strings.Repeat("─", iw-2)), foot)
-	for len(body) < h-3 {
+	foot := " " + fg(p.dim, fmt.Sprintf("%-11s", "total")) + "   " + pad("", whatW)
+	for t := range tickets {
+		foot += bold(p.hue[t], fmt.Sprintf("%*s", cw, dur(tot[t])))
+	}
+	foot += bold(p.amber, fmt.Sprintf("%*s", lastW, dur(offSum)))
+	rule := " " + fg(p.faint, strings.Repeat("─", iw-2))
+	if first+more > 0 {
+		hidden := fmt.Sprintf("%d above · %d below ", first, more)
+		rule = " " + fg(p.dim, hidden) + fg(p.faint, strings.Repeat("─", max(iw-2-lipgloss.Width(hidden), 0)))
+	}
+	body = append(body, rule, foot)
+	for len(body) < h-4 {
 		body = append(body, "")
 	}
-	body = append(body, " "+bold(hue[0], "› ")+detail)
-	return box(2, "stretches", fg(dim, fmt.Sprintf("%d/%d", m.cur+1, len(m.segments))), w, h, body)
+	t, dt, _ := strings.Cut(detail, "\n")
+	body = append(body, " "+t, " "+dt)
+	right := fg(p.dim, fmt.Sprintf("%d of %d", m.cur+1, len(m.segments)))
+	return box(2, "stretches", right, m.events == 0, w, h, body)
+}
+
+// handRow is the stretch table's row for hand adjustments, so each column
+// still adds up to its total. Empty when nothing was adjusted.
+func (m model) handRow(hand []int, cw, whatW, lastW int) string {
+	row, some := " "+fg(p.amber, fmt.Sprintf("%-11s", "by hand"))+"   "+pad("", whatW), false
+	for t := range tickets {
+		n := hand[t]
+		cell := fg(p.faint, fmt.Sprintf("%*s", cw, "·"))
+		if n != 0 {
+			some = true
+			cell = fg(p.amber, fmt.Sprintf("%*s", cw, signed(n)))
+		}
+		row += cell
+	}
+	if !some {
+		return ""
+	}
+	return row + fg(p.faint, fmt.Sprintf("%*s", lastW, "·"))
 }
 
 // --- events: the audit view ---
@@ -690,147 +865,155 @@ func kind(e event) (glyph, name string) {
 	return "│", "prompt"
 }
 
-func plural(n int, word string) string {
-	if n == 1 {
-		return "1 " + word
-	}
-	return fmt.Sprintf("%d %ss", n, word)
-}
-
-// eventBox audits the selected stretch in the main screen's own grammar:
-// per ticket a row of holes (one per event) over the bar of minutes counted
-// for it; then where the events came from, once; then every event with the
-// silence before it, which is the number the idle-gap rule acts on.
+// eventBox audits the selected stretch. It leads with what the stretch is,
+// who it was credited to and from which sessions, and where the idle-gap
+// rule came close to splitting it; the raw events sit one level deeper.
 func (m model) eventBox(w, h int) []string {
 	s := m.segments[m.cur]
 	iw := w - 2
+	evs := m.eventsIn(s)
+	var body []string
+
+	head := " " + bold(p.text, clock(s.from)+"–"+clock(s.to)) + fg(p.muted, " · "+dur(s.to-s.from)+" · ")
+	switch o := s.owners[0]; {
+	case o >= meet:
+		mt := meetings[o-meet]
+		head += fg(p.amber, mt.title) + fg(p.muted, " · meeting · ") + m.assignedTo(m.meetTo[o-meet])
+	case o == gap:
+		head += fg(p.muted, "gap · no evidence · ") + m.assignedTo(m.gapTo[s.gapIdx])
+	default:
+		head += fg(p.muted, "work · "+plural(len(evs), "event"))
+	}
+	body = append(body, head, "")
+
+	// who was credited, and where each ticket was found
+	for t, tk := range tickets {
+		counted, prompts, commits := 0, 0, 0
+		for mm := s.from; mm < s.to; mm++ {
+			if m.eff(mm) == t {
+				counted++
+			}
+		}
+		for _, e := range evs {
+			if e.ticket == t {
+				if _, k := kind(e); k == "commit" {
+					commits++
+				} else {
+					prompts++
+				}
+			}
+		}
+		if counted == 0 && prompts+commits == 0 {
+			continue
+		}
+		line := " " + pad(bold(p.hue[t], tk.key), 9) + fg(p.text, fmt.Sprintf("%7s", dur(counted))) + fg(p.muted, " counted")
+		if prompts+commits > 0 {
+			src := plural(prompts, "prompt")
+			if commits > 0 {
+				src += ", " + plural(commits, "commit") + " (shown, not counted)"
+			}
+			pre, post, _ := strings.Cut(branch[t], tk.key)
+			line += fg(p.dim, " · "+src+" · branch ") + fg(p.muted, pre) + bold(p.hue[t], tk.key) + fg(p.muted, post)
+		} else {
+			line += fg(p.dim, " · assigned by hand")
+		}
+		body = append(body, line)
+	}
+	if o := s.owners[0]; o >= meet && meetings[o-meet].during > 0 {
+		var who []string
+		for _, e := range evs {
+			who = append(who, tickets[e.ticket].key+" at "+clock(e.min))
+		}
+		body = append(body, " "+fg(p.amber, "! "+plural(len(evs), "event")+" fired during it ("+strings.Join(who, ", ")+")")+fg(p.muted, "; the meeting wins until you assign it"))
+	}
+
+	// boundary sensitivity: the longest silence that still joined
+	worst, at := 0, 0
+	for i := 1; i < len(evs); i++ {
+		if d := evs[i].min - evs[i-1].min; d > worst {
+			worst, at = d, evs[i].min
+		}
+	}
+	switch {
+	case len(evs) < 2:
+	case worst >= idleGap-2:
+		body = append(body, " "+fg(p.amber, fmt.Sprintf("! longest silence +%dm before %s", worst, clock(at)))+fg(p.muted, fmt.Sprintf(", %s inside the %dm idle gap; a slower prompt would have split this stretch", dur(idleGap-worst), idleGap)))
+	default:
+		body = append(body, " "+fg(p.dim, fmt.Sprintf("longest silence +%dm, well inside the %dm idle gap", worst, idleGap)))
+	}
+
+	// the stretch in the main screen's grammar: per ticket, a mark per event
+	// over the minutes counted for it
 	g := iw - labelW - 1
 	col := func(mm int) int { return min((mm-s.from)*g/(s.to-s.from), g-1) }
 	mid := func(c int) int { return s.from + (2*c+1)*(s.to-s.from)/(2*g) }
-	var evs []event
-	for _, e := range m.d.events {
-		if e.min >= s.from && e.min < s.to {
-			evs = append(evs, e)
-		}
-	}
-
 	axis := []rune(strings.Repeat(" ", g))
 	for mm := (s.from + 9) / 10 * 10; mm < s.to; mm += 10 {
 		if c := col(mm); c+5 <= g && (c == 0 || axis[c-1] == ' ') {
 			copy(axis[c:], []rune(clock(mm)))
 		}
 	}
-	body := []string{strings.Repeat(" ", labelW) + fg(dim, string(axis))}
-	var sessions []string
+	var lanes []string
 	for t, tk := range tickets {
-		holes := make([]string, g)
-		prompts, commits := 0, 0
+		marks := make([]string, g)
+		seen, counted := false, false
 		for _, e := range evs {
 			if e.ticket == t {
-				c := col(e.min)
-				switch _, name := kind(e); {
-				case name == "commit":
-					holes[c] = "◆"
-					commits++
-				case holes[c] == "":
-					holes[c] = "│"
-					prompts++
-				default:
-					if holes[c] == "│" {
-						holes[c] = "┃"
-					}
-					prompts++
-				}
+				gl, _ := kind(e)
+				marks[col(e.min)] = gl
+				seen = true
 			}
-		}
-		counted := 0
-		for mm := s.from; mm < s.to; mm++ {
-			if m.eff(mm) == t {
-				counted++
-			}
-		}
-		if prompts+commits == 0 && counted == 0 {
-			continue
 		}
 		var hb, cb strings.Builder
-		for c, hl := range holes {
-			switch hl {
-			case "":
-				hb.WriteString(fg(faint, "·"))
-			case "◆":
-				hb.WriteString(bold(hex("#FFFFFF"), hl))
-			default:
-				hb.WriteString(fg(hue[t], hl))
+		for c := range marks {
+			if marks[c] == "" {
+				hb.WriteString(fg(p.faint, "·"))
+			} else {
+				hb.WriteString(bold(p.hue[t], marks[c]))
 			}
 			if m.eff(mid(c)) == t {
-				cb.WriteString(fg(hue[t].mix(ink, 0.5), "▀"))
+				cb.WriteString(fg(p.hue[t], "━"))
+				counted = true
 			} else {
-				cb.WriteString(" ")
+				cb.WriteString(fg(p.faint, "─"))
 			}
 		}
-		label := " " + fg(text, dur(counted))
-		if counted == 0 {
-			label = ""
-		}
-		body = append(body, pad(" "+bold(hue[t], tk.key), labelW)+hb.String(), pad(label, labelW)+cb.String())
-		if prompts+commits > 0 {
-			n := plural(prompts, "prompt")
-			if commits > 0 {
-				n += " · " + plural(commits, "commit")
-			}
-			// show the key where it was found, so the attribution explains itself
-			pre, post, _ := strings.Cut(branch[t], tk.key)
-			sessions = append(sessions, " "+pad(bold(hue[t], tk.key), 9)+fg(dim, "← branch ")+fg(dim, pre)+bold(hue[t], tk.key)+fg(dim, post)+fg(dim, " · claude session · "+n))
+		if seen || counted {
+			lanes = append(lanes, pad(" "+bold(p.hue[t], tk.key), labelW)+hb.String(), strings.Repeat(" ", labelW)+cb.String())
 		}
 	}
-	var ub strings.Builder
-	unlogged := 0
-	for c := 0; c < g; c++ {
-		switch o := m.eff(mid(c)); {
-		case o >= meet:
-			ub.WriteString(fg(amber, "▀"))
-			unlogged++
-		case o == gap:
-			ub.WriteString(fg(dim, "░"))
-			unlogged++
-		default:
-			ub.WriteString(" ")
-		}
+	if len(lanes) > 0 {
+		body = append(body, "", strings.Repeat(" ", labelW)+fg(p.dim, string(axis)))
+		body = append(body, lanes...)
 	}
-	if unlogged > 0 {
-		body = append(body, pad(" "+fg(dim, "unlogged"), labelW)+ub.String())
-	}
-	body = append(body, "")
-	if len(sessions) > 0 {
-		body = append(body, sessions...)
-		body = append(body, "")
+
+	if m.events < 2 {
+		body = append(body, "", " "+fg(p.dim, "e again lists every event with the silence before it · esc closes"))
+		return box(2, "inspect", fg(p.dim, plural(len(evs), "event")), true, w, h, body)
 	}
 
 	// every event, reading across: time, kind, and the silence before it
+	body = append(body, "")
 	const cellW = 15
 	per := max((iw-2)/cellW, 1)
 	room := (h - 2 - len(body)) * per
 	var line strings.Builder
 	for i, e := range evs {
 		if i == room-1 && len(evs) > room {
-			line.WriteString(fg(dim, fmt.Sprintf("+ %d more", len(evs)-i)))
+			line.WriteString(fg(p.dim, fmt.Sprintf("+ %d more", len(evs)-i)))
 			break
 		}
-		gl, name := kind(e)
-		gc := hue[e.ticket]
-		if name == "commit" {
-			gc = hex("#FFFFFF")
-		}
+		gl, _ := kind(e)
 		since := ""
 		if i > 0 {
 			d := e.min - evs[i-1].min
-			c := faint
-			if d >= idleGap-2 { // close to the idle gap: one slower prompt would have split this
-				c = amber
+			c := p.dim
+			if d >= idleGap-2 {
+				c = p.amber
 			}
 			since = fg(c, fmt.Sprintf("+%dm", d))
 		}
-		line.WriteString(pad(fg(text, clock(e.min))+" "+bold(gc, gl)+" "+since, cellW))
+		line.WriteString(pad(fg(p.text, clock(e.min))+" "+bold(p.hue[e.ticket], gl)+" "+since, cellW))
 		if (i+1)%per == 0 {
 			body = append(body, " "+line.String())
 			line.Reset()
@@ -840,80 +1023,74 @@ func (m model) eventBox(w, h int) []string {
 		body = append(body, " "+line.String())
 	}
 	if len(evs) == 0 {
-		body = append(body, " "+fg(dim, "nothing fired in this stretch"))
+		body = append(body, " "+fg(p.dim, "nothing fired in this stretch"))
 	}
-	legend := fg(text, "│") + fg(dim, " prompt  ") + fg(text, "┃") + fg(dim, " several  ") + bold(hex("#FFFFFF"), "◆") + fg(dim, " commit  ") + fg(hue[0].mix(ink, 0.5), "▀") + fg(dim, " counted  ") + fg(amber, "+9m") + fg(dim, " near the idle gap")
-	return box(2, fmt.Sprintf("events · %s–%s · %d", clock(s.from), clock(s.to), len(evs)), legend, w, h, body)
+	legend := fg(p.muted, "│ prompt  ◆ commit  ") + fg(p.amber, "+9m") + fg(p.muted, " near the idle gap")
+	return box(2, "inspect · every event", legend, true, w, h, body)
 }
 
-// --- ³ draft: the worklogs that would be sent ---
+// --- 3 draft: the worklogs that would be sent ---
 
 func (m model) draftBox(w, h int) []string {
 	iw := w - 2
-	sent, meetOff, gapOff := 0, 0, 0
-	for t := range tickets {
-		sent += m.total(t)
-	}
-	for i, mt := range meetings {
-		if m.meetTo[i] == none {
-			meetOff += mt.to - mt.from
-		}
-	}
-	for i, gp := range m.d.gaps {
-		if m.gapTo[i] == none {
-			gapOff += gp.to - gp.from
-		}
-	}
-	// every number ends in the same column
-	line := func(left, val string) string {
-		return " " + pad(left, iw-2-8) + val + " "
-	}
-	num := func(c rgb, n int) string { return bold(c, fmt.Sprintf("%8s", dur(n))) }
-	body := []string{""}
+	line := func(left, right string) string { return " " + spread(left, right, iw-2) }
+	meetOff, gapOff := m.unassigned()
+	ruled := h-2 >= len(tickets)*3+3
+	hand := m.byHand()
+	var body []string
 	for t, tk := range tickets {
-		mark := ""
-		if m.adjust[t] != 0 {
-			mark = fg(amber, fmt.Sprintf("  %+dm by hand", m.adjust[t]))
+		key := bold(p.hue[t], tk.key)
+		if n := hand[t]; n != 0 {
+			key += fg(p.amber, "  "+signed(n)+" by hand")
 		}
-		body = append(body,
-			line(bold(hue[t], fmt.Sprintf("%-8s", tk.key))+" "+fg(dim, tk.summary)+mark, ""),
-			line(meter(float64(m.total(t))/float64(max(sent, 1)), iw-2-8-1, hue[t]), num(text, m.total(t))),
-			"")
+		body = append(body, line(key, bold(p.text, dur(m.total(t)))), " "+fg(p.muted, tk.summary))
+		if ruled {
+			body = append(body, " "+fg(p.faint, strings.Repeat("─", iw-2)))
+		}
+	}
+	if !ruled {
+		body = append(body, " "+fg(p.faint, strings.Repeat("─", iw-2)))
 	}
 	body = append(body,
-		" "+fg(faint, strings.Repeat("─", iw-2)),
-		line(fg(text, "to send")+fg(dim, fmt.Sprintf(" · %d worklogs → Jira", len(tickets))), num(hue[0], sent)),
-		line(fg(text, "unlogged")+fg(dim, " · meetings "+dur(meetOff)+" · gaps "+dur(gapOff)), num(dim, meetOff+gapOff)))
-	return box(3, "draft", bold(hue[0], "⏎")+fg(text, " confirm & send"), w, h, body)
+		line(bold(p.text, "ready to send"), bold(p.text, dur(m.toSend()))),
+		line(fg(p.muted, "unassigned"), fg(p.amber, dur(meetOff+gapOff))))
+	return box(3, "draft", fg(p.dim, plural(len(tickets), "worklog")), false, w, h, body)
 }
 
 func (m model) View() tea.View {
+	p = &themes[m.theme]
 	var out []string
 	if m.w < 96 || m.h < 30 {
 		out = []string{fmt.Sprintf("PROTOTYPE: needs 96×30 or larger (now %d×%d)", m.w, m.h)}
 	} else {
-		botH := max(len(m.segments)+7, len(tickets)*3+6) // sized to its rows; the lanes get the rest
-		rows := max(2, min(6, (m.h-1-botH-4-len(tickets))/len(tickets)))
-		topH := 1 + len(tickets)*(rows+1) + 1 + 2
-		legend := fg(hue[0], "▀") + fg(dim, " counted  ") + fg(amber, "▀") + fg(dim, " meeting  ░ no evidence")
-		out = box(1, "day · Tue 10 Nov", legend, m.w, topH, m.dayBox(m.w, rows))
-		botH = m.h - topH - 1
-		lw := m.w * 58 / 100
-		rw := m.w - lw
-		if m.events {
+		evRows := 2
+		if m.h >= 44 {
+			evRows = 3
+		}
+		sep := m.h >= 34
+		topH := dayHeight(evRows, sep)
+		brand := " " + bold(p.text, "sift") + " " + fg(p.focus, "▰") + "   " + fg(p.text, "Tue 10 Nov") + fg(p.dim, " · draft")
+		out = append(out, spread(brand, fg(p.muted, fmt.Sprintf("%d tickets · %s to send ", len(tickets), dur(m.toSend()))), m.w))
+		out = append(out, box(1, "day", fg(p.dim, "evidence and counted time"), false, m.w, topH, m.dayBox(m.w, evRows, sep))...)
+		botH := m.h - topH - 2
+		rw := max(34, min(46, m.w*36/100))
+		if m.events > 0 {
 			out = append(out, m.eventBox(m.w, botH)...)
 		} else {
-			l := m.stretchBox(lw, botH)
+			l := m.stretchBox(m.w-rw, botH)
 			r := m.draftBox(rw, botH)
 			for i := range l {
 				out = append(out, l[i]+r[i])
 			}
 		}
-		key := func(k, what string) string { return bold(hue[0], k) + fg(dim, " "+what+"   ") }
-		out = append(out, " "+key("↑↓", "stretch")+key("t", "assign meeting or gap")+key("+ −", "adjust 5m")+key("e", "events")+key("q", "quit")+fg(faint, "PROTOTYPE · fake data"))
+		key := func(k, what string) string { return fg(p.text, k) + fg(p.dim, " "+what+"   ") }
+		keys := " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("+ −", "adjust 5m") + key("T", p.name) + key("q", "quit")
+		out = append(out, spread(keys, fg(p.faint, "prototype · fake data "), m.w))
 	}
 	v := tea.NewView(strings.Join(out, "\n"))
 	v.AltScreen = true
+	v.BackgroundColor = lipgloss.Color(p.bg.String())
+	v.ForegroundColor = lipgloss.Color(p.text.String())
 	return v
 }
 

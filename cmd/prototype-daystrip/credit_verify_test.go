@@ -86,6 +86,11 @@ func parseDur(s string) (int, error) {
 	if s == "·" {
 		return 0, nil
 	}
+	if rest, ok := strings.CutPrefix(s, "-"); ok {
+		n, err := parseDur(rest)
+		return -n, err
+	}
+	s = strings.TrimPrefix(s, "+")
 	g := durRe.FindStringSubmatch(s)
 	if g == nil {
 		return 0, fmt.Errorf("not a duration: %q", s)
@@ -99,11 +104,11 @@ func parseDur(s string) (int, error) {
 // column adds up to the total printed under it (the promise in stretchBox's
 // comment). It reads the rendered box, so it checks what the user sees.
 func checkColumns(m model) error {
-	const w, cw = 200, 9
+	const w = 200
 	h := len(m.segments) + 10 // tall enough that no row scrolls away
 	lines := m.stretchBox(w, h)
 	iw := w - 2
-	whatW := iw - 1 - 11 - 3 - cw*(len(tickets)+1) - 1
+	whatW, cw, _ := stretchCols(iw)
 	start := 1 + 1 + 11 + 3 + whatW // box edge, then the row's fixed prefix
 	cells := func(line string) ([]int, error) {
 		r := []rune(ansi.Strip(line))
@@ -117,20 +122,30 @@ func checkColumns(m model) error {
 		}
 		return out, nil
 	}
+	// every row between the header and the total row, the hand-adjustment
+	// row included; rules are skipped
 	sum := make([]int, len(tickets))
-	rows := lines[2 : 2+len(m.segments)] // top border, header, then one row per stretch
-	for _, row := range rows {
+	n, foot := 0, ""
+	for _, row := range lines[2:] {
+		plain := ansi.Strip(row)
+		if strings.Contains(plain, "│ total") {
+			foot = row
+			break
+		}
+		if strings.Contains(plain, "──") {
+			continue
+		}
 		c, err := cells(row)
 		if err != nil {
-			return fmt.Errorf("reading row %q: %v", ansi.Strip(row), err)
+			return fmt.Errorf("reading row %q: %v", plain, err)
 		}
 		for t := range sum {
 			sum[t] += c[t]
 		}
+		n++
 	}
-	foot := lines[2+len(m.segments)+1] // after the rule
-	if !strings.Contains(ansi.Strip(foot), "total") {
-		return fmt.Errorf("footer not where expected: %q", ansi.Strip(foot))
+	if foot == "" || n < len(m.segments) {
+		return fmt.Errorf("read %d rows and no total row; want %d stretches then the total", n, len(m.segments))
 	}
 	tot, err := cells(foot)
 	if err != nil {
@@ -184,7 +199,21 @@ func TestCreditSeededDay(t *testing.T) { explore(t, checkCredit) }
 
 // TestColumnsSeededDay checks P2 in every reachable state of the seeded day.
 // Known finding F2 as of the sync commit in the skill.
-func TestColumnsSeededDay(t *testing.T) { explore(t, checkColumns) }
+func TestColumnsSeededDay(t *testing.T) {
+	// The table's sums depend on the adjustments and assignments only, not
+	// on the selection or the inspect level, so each distinct table is
+	// rendered and checked once (one render costs most of a millisecond).
+	seen := map[string]error{}
+	explore(t, func(m model) error {
+		k := fmt.Sprint(m.adjust, m.meetTo, m.gapTo)
+		err, ok := seen[k]
+		if !ok {
+			err = checkColumns(m)
+			seen[k] = err
+		}
+		return err
+	})
+}
 
 // genDay builds a day from r: 1-60 events at any minute on any ticket, and 0-3
 // calendar meetings inside the day that may name a ticket. With overlap false,

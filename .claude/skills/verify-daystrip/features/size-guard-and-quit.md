@@ -20,7 +20,7 @@ Preconditions:
 - Fresh baseline.
 
 - **Guard.** Run `daystrip.sh keys j j` then `daystrip.sh resize 90 28`. The screen's first line reads `PROTOTYPE: needs 96×30 or larger (now 90×28)` and nothing else is drawn.
-- **Restore.** Run `daystrip.sh resize 120 36`. The main screen returns with `3/9` still selected.
+- **Restore.** Run `daystrip.sh resize 120 36`. The main screen returns with `3 of 9` still selected and the `│›` row `10:51–11:43   13 events`.
 - **Quit.** Run `daystrip.sh keys q`. The screen reads `[daystrip exited 0]` and `daystrip.sh doctor` reports `FAIL app process not running`.
 - **Proof.** Snap each state with `daystrip.sh snap size-<step>`.
 

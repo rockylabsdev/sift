@@ -11,7 +11,7 @@ rc=0
 
 run() { go test -tags verify -count=1 -v -run "^$1\$" "$PKG" 2>&1; }
 
-for t in TestCreditSeededDay TestCreditGeneratedDays; do
+for t in TestCreditSeededDay TestCreditGeneratedDays TestColumnsSeededDay TestCreditOverlappingMeetings; do
   out=$(run "$t")
   if grep -q -- "^--- PASS: $t" <<<"$out"; then
     echo "PASS          $t $(grep -o 'checked [0-9]* reachable states' <<<"$out")"
@@ -21,11 +21,8 @@ for t in TestCreditSeededDay TestCreditGeneratedDays; do
 done
 
 # name|signature that the recorded counterexample prints
-known=(
-  "TestColumnsSeededDay|F2|after keys [+]: PUN-142: column adds up to 2h 58m, total row shows 3h 03m"
-  "TestCreditOverlappingMeetings|F1|meetings: 10:48–12:07, 10:31–10:57,"
-)
-for k in "${known[@]}"; do
+known=()
+for k in ${known[@]+"${known[@]}"}; do
   IFS='|' read -r t id sig <<<"$k"
   out=$(run "$t")
   if grep -q -- "^--- PASS: $t" <<<"$out"; then
