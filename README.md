@@ -10,3 +10,7 @@ no `pstack:` prefix: use `/setup-pstack`, `/poteto-mode`, `/poteto-help`, and so
 `harness/pstack/claude-code/{skills,agents,docs,README.md}` from that repo.
 `/setup-pstack` model choices live in `.claude/rules/pstack-models.md` (committed, so cloud sessions
 keep them) rather than `~/.claude/rules/`; re-run `/setup-pstack` and save the result there to change them.
+
+Project-specific verification skills (not part of pstack):
+- `/verify-daystrip` drives the daystrip prototype TUI in tmux and records screen evidence (`.verify/`, gitignored).
+- `/verify-daystrip-credit` checks that the draft credits every ticket exactly what the day strip shows (`check.sh`, ~30s).
