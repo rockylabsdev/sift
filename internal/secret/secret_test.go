@@ -184,3 +184,15 @@ func TestKeychainLive(t *testing.T) {
 		t.Fatalf("after Delete: err = %v", err)
 	}
 }
+
+func TestASandboxNeverUsesTheKeychain(t *testing.T) {
+	env := map[string]string{"HOME": t.TempDir()}
+	s, _ := Open(func(k string) string { return env[k] }, "darwin")
+	if s.Keychain == nil {
+		t.Fatal("on macOS the Keychain is used")
+	}
+	env["SIFT_SANDBOX"] = "/tmp/box"
+	if s, _ = Open(func(k string) string { return env[k] }, "darwin"); s.Keychain != nil {
+		t.Fatal("a sandbox must not touch the real Keychain")
+	}
+}

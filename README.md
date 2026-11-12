@@ -26,7 +26,7 @@ SIFT_SANDBOX=~/sift-try scripts/sandbox.sh   # keep the sandbox between runs
 go test ./...
 ```
 
-Inside the sandbox, `claude` loads this checkout's plugin, and `sift setup jira` or `sift setup calendar` connect real accounts without touching your everyday config. Secrets still go to the Keychain on macOS, under names that do not clash.
+Inside the sandbox, `claude` loads this checkout's plugin, and `sift setup jira` or `sift setup calendar` connect real accounts without touching your everyday config. The sandbox keeps secrets in its own config directory, never in the Keychain, so your real token and calendar address are never overwritten.
 
 ## Release
 

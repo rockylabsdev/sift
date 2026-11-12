@@ -46,7 +46,9 @@ func Open(getenv func(string) string, goos string) (Store, error) {
 		base = filepath.Join(home, ".config")
 	}
 	s := Store{Dir: filepath.Join(base, "sift", "secrets")}
-	if goos == "darwin" {
+	// A sandbox (scripts/sandbox.sh) keeps its secrets in its own files, so
+	// trying a checkout never overwrites the real Keychain items.
+	if goos == "darwin" && getenv("SIFT_SANDBOX") == "" {
 		s.Keychain = &System
 	}
 	return s, nil
