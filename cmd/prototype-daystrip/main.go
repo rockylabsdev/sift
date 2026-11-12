@@ -224,8 +224,9 @@ type model struct {
 	segments []segment
 }
 
-func newModel() model {
-	d := derive(seedDay())
+func newModel() model { return modelFor(derive(seedDay())) }
+
+func modelFor(d *day) model {
 	m := model{d: d, w: 120, h: 36, adjust: make([]int, len(tickets)), meetTo: make([]int, len(meetings)), gapTo: make([]int, len(d.gaps))}
 	for i := range m.meetTo {
 		m.meetTo[i] = none
