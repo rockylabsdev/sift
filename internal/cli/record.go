@@ -90,7 +90,11 @@ func (r *run) append(cwd, source, kind string, o evidence.Origin) (evidence.Even
 	}
 	e := evidence.Event{At: r.Now(), Source: source, Kind: kind, Dir: cwd, Origin: o}
 	if cwd != "" {
-		e.Ticket, e.Found = evidence.TicketFor(cwd)
+		cfg, err := r.config()
+		if err != nil { // a broken config must not lose evidence
+			fmt.Fprintln(r.Stderr, "sift: ignoring projects:", err)
+		}
+		e.Ticket, e.Found = evidence.TicketFor(cwd, cfg.Projects)
 	}
 	return e, evidence.Log{Dir: dir}.Append(e)
 }

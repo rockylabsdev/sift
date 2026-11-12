@@ -175,9 +175,10 @@ func (r *run) dataDir() (string, error) {
 
 // Config is the settings file, $XDG_CONFIG_HOME/sift/config.json.
 type Config struct {
-	IdleGap   int  `json:"idle_gap_minutes,omitempty"`
-	Round     int  `json:"round_minutes,omitempty"` // 0, 5 or 15
-	EventsWin bool `json:"events_beat_meetings,omitempty"`
+	IdleGap   int      `json:"idle_gap_minutes,omitempty"`
+	Round     int      `json:"round_minutes,omitempty"` // 0, 5 or 15
+	EventsWin bool     `json:"events_beat_meetings,omitempty"`
+	Projects  []string `json:"projects,omitempty"` // the branch rule takes only these projects' keys
 }
 
 func (r *run) config() (Config, error) {

@@ -18,8 +18,10 @@ var TicketFiles = []string{".sift", ".punchcard"}
 
 // TicketFor tells dir's ticket: the nearest ticket file at dir or above
 // (no higher than the git root) whose first meaningful line is a key, else
-// the first key in the branch name. Nil when neither names one.
-func TicketFor(dir string) (*string, *Found) {
+// the first key in the branch name. With projects, the branch rule takes
+// only keys of those projects, so "fix-2" is not a ticket. Nil when
+// neither names one.
+func TicketFor(dir string, projects []string) (*string, *Found) {
 	root := gitOut(dir, "rev-parse", "--show-toplevel")
 	if d, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = d
@@ -36,9 +38,11 @@ func TicketFor(dir string) (*string, *Found) {
 		}
 	}
 	if b := gitOut(dir, "symbolic-ref", "--short", "-q", "HEAD"); b != "" {
-		if k := keyRe.FindString(b); k != "" {
+		for _, k := range keyRe.FindAllString(b, -1) {
 			k = strings.ToUpper(k)
-			return &k, &Found{Via: "branch", Value: b}
+			if inProjects(k, projects) {
+				return &k, &Found{Via: "branch", Value: b}
+			}
 		}
 	}
 	return nil, nil
@@ -71,4 +75,17 @@ func gitOut(dir string, args ...string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func inProjects(key string, projects []string) bool {
+	if len(projects) == 0 {
+		return true
+	}
+	p, _, _ := strings.Cut(key, "-")
+	for _, x := range projects {
+		if strings.EqualFold(p, x) {
+			return true
+		}
+	}
+	return false
 }

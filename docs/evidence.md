@@ -27,7 +27,7 @@ The log is append-only. Sift never rewrites a line, and corrections to a day liv
 
 ## How a ticket is told
 
-The nearest `.sift` file at the directory or above wins, looking no higher than the git root. A `.punchcard` file is read the same way so directories set up for Punchcard keep working. The file's first line that is not blank and not a `#` comment must be a key such as `PUN-142`. When no file names a key, the first key in the current branch name is used (`feature/pun-142-x` gives `PUN-142`).
+The nearest `.sift` file at the directory or above wins, looking no higher than the git root. A `.punchcard` file is read the same way so directories set up for Punchcard keep working. The file's first line that is not blank and not a `#` comment must be a key such as `PUN-142`. When no file names a key, the first key in the current branch name is used (`feature/pun-142-x` gives `PUN-142`). Set `"projects": ["PUN", "OPS"]` in `$XDG_CONFIG_HOME/sift/config.json` and the branch rule takes only those projects' keys, so a branch such as `fix-2/pun-142-x` gives `PUN-142` rather than `FIX-2`.
 
 ## What the deriver does with it
 

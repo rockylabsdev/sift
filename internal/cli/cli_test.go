@@ -183,3 +183,29 @@ func TestDraftMarkdown(t *testing.T) {
 		t.Fatalf("a format asked for by name prints raw, even with SIFT_JSON:\n%s", out)
 	}
 }
+
+func TestProjectsSettingReachesTheHook(t *testing.T) {
+	h := newHarness(t)
+	exec.Command("git", "-C", h.repo, "checkout", "-q", "-b", "fix-2/pun-150-stop").Run()
+	os.MkdirAll(filepath.Join(h.env["XDG_CONFIG_HOME"], "sift"), 0o700)
+	os.WriteFile(filepath.Join(h.env["XDG_CONFIG_HOME"], "sift", "config.json"), []byte(`{"projects":["PUN"]}`), 0o600)
+	h.prompt(9, 0, h.repo)
+	_, _, data := h.envelope("events")
+	if ev := data["events"].([]any)[0].(map[string]any); ev["ticket"] != "PUN-150" {
+		t.Fatalf("ticket %v, want PUN-150", ev["ticket"])
+	}
+}
+
+func TestABrokenConfigStillRecords(t *testing.T) {
+	h := newHarness(t)
+	os.MkdirAll(filepath.Join(h.env["XDG_CONFIG_HOME"], "sift"), 0o700)
+	os.WriteFile(filepath.Join(h.env["XDG_CONFIG_HOME"], "sift", "config.json"), []byte(`{broken`), 0o600)
+	in := `{"cwd":"` + h.repo + `"}`
+	if code, out, errOut := h.run(in, "record", "--hook"); code != 0 || out != "" || !strings.Contains(errOut, "ignoring projects") {
+		t.Fatalf("exit %d stdout %q stderr %q", code, out, errOut)
+	}
+	os.Remove(filepath.Join(h.env["XDG_CONFIG_HOME"], "sift", "config.json"))
+	if _, _, data := h.envelope("events"); len(data["events"].([]any)) != 1 {
+		t.Fatalf("the prompt was not recorded")
+	}
+}

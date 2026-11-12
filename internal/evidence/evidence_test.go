@@ -96,25 +96,40 @@ func TestTicketFromBranchThenFile(t *testing.T) {
 	sub := filepath.Join(repo, "a", "b")
 	os.MkdirAll(sub, 0o700)
 
-	k, f := TicketFor(sub)
+	k, f := TicketFor(sub, nil)
 	if k == nil || *k != "PUN-142" || f.Via != "branch" || f.Value != "feature/pun-142-side-lock" {
 		t.Fatalf("from the branch: %v %+v", k, f)
 	}
 
 	os.WriteFile(filepath.Join(repo, "a", ".punchcard"), []byte("# the ticket\nops-77\n"), 0o600)
-	k, f = TicketFor(sub)
+	k, f = TicketFor(sub, nil)
 	if k == nil || *k != "OPS-77" || f.Via != "file" {
 		t.Fatalf("from .punchcard: %v %+v", k, f)
 	}
 
 	os.WriteFile(filepath.Join(sub, ".sift"), []byte("PUN-150\n"), 0o600)
-	if k, _ = TicketFor(sub); *k != "PUN-150" {
+	if k, _ = TicketFor(sub, nil); *k != "PUN-150" {
 		t.Fatalf("the nearest file wins: %v", *k)
 	}
 }
 
 func TestNoTicketOutsideARepo(t *testing.T) {
-	if k, f := TicketFor(t.TempDir()); k != nil || f != nil {
+	if k, f := TicketFor(t.TempDir(), nil); k != nil || f != nil {
 		t.Fatalf("got %v %+v", *k, f)
+	}
+}
+
+func TestProjectsFilterTheBranchRule(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init", "-q", "-b", "fix-2/pun-142-side-lock")
+	if k, _ := TicketFor(repo, nil); k == nil || *k != "FIX-2" {
+		t.Fatalf("without projects the first key-like text wins: %v", k)
+	}
+	if k, _ := TicketFor(repo, []string{"PUN", "OPS"}); k == nil || *k != "PUN-142" {
+		t.Fatalf("with projects: %v", k)
+	}
+	git(t, repo, "checkout", "-q", "-b", "release-2026")
+	if k, f := TicketFor(repo, []string{"PUN"}); k != nil || f != nil {
+		t.Fatalf("a branch with no listed project has no ticket: %v", *k)
 	}
 }
