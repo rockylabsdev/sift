@@ -214,8 +214,12 @@ func TestAConfirmedDayRefusesChanges(t *testing.T) {
 	if !strings.Contains(m.msg, "confirmed") || m.dr.Total != 60 {
 		t.Fatalf("msg %q total %d", m.msg, m.dr.Total)
 	}
-	if !strings.Contains(frame(sized(m, 120, 36)), "Tue 10 Nov · confirmed") {
+	fr := frame(sized(m, 120, 36))
+	if !strings.Contains(fr, "Tue 10 Nov · confirmed") {
 		t.Fatalf("the header does not say confirmed")
+	}
+	if !strings.Contains(fr, "confirmed, read-only") || strings.Contains(fr, "t assign") {
+		t.Fatalf("a confirmed day offers keys it refuses:\n%s", fr)
 	}
 }
 

@@ -705,7 +705,10 @@ func (m Model) View() tea.View {
 			status = fg(th.amber, m.msg+" ")
 		}
 		keys := " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("+ −", "adjust") + key("c", "confirm") + key("[ ]", "day") + key("T", th.Name) + key("q", "quit")
-		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w {
+		if m.dr.Confirmed {
+			keys = " " + key("↑↓", "select") + key("e", "inspect") + key("[ ]", "day") + key("T", th.Name) + key("q", "quit") + fg(th.muted, "confirmed, read-only   ")
+		}
+		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && !m.dr.Confirmed {
 			keys = " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("+−", "adjust") + key("c", "confirm") + key("[]", "day") + key("q", "quit")
 		}
 		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && m.msg == "" {

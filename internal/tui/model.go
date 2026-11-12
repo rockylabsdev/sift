@@ -172,7 +172,7 @@ func (m Model) target(s derive.Stretch) string {
 func (m *Model) change(f func(*draft.Decisions) error) {
 	err := m.src.Update(m.in.Start, f)
 	if errors.Is(err, draft.ErrConfirmed) {
-		m.msg = "This day is confirmed and can no longer change."
+		m.msg = "Confirmed days do not change."
 		return
 	}
 	if err != nil {
