@@ -21,6 +21,7 @@ type client struct {
 	base       string // https://<host>/rest/api/3
 	email, tok string
 	http       *http.Client
+	me         string // this account's id, read once by FindWorklog
 }
 
 // New is the client for siteURL (e.g. https://example.atlassian.net; a
@@ -47,6 +48,33 @@ func (c *client) PostWorklog(ctx context.Context, key string, w tracker.Worklog)
 		return "", err
 	}
 	return v.ID, nil
+}
+
+func (c *client) FindWorklog(ctx context.Context, key string, w tracker.Worklog) (string, error) {
+	if c.me == "" {
+		var me wireMyself
+		if err := c.do(ctx, "GET", "/myself", nil, &me); err != nil {
+			return "", err
+		}
+		c.me = me.AccountID
+	}
+	at := w.Started.Truncate(time.Second)
+	q := url.Values{
+		"startedAfter":  {fmt.Sprint(at.Add(-time.Second).UnixMilli())},
+		"startedBefore": {fmt.Sprint(at.Add(time.Second).UnixMilli())},
+		"maxResults":    {"5000"},
+	}
+	var page wireWorklogPage
+	if err := c.do(ctx, "GET", "/issue/"+url.PathEscape(key)+"/worklog?"+q.Encode(), nil, &page); err != nil {
+		return "", err
+	}
+	for _, x := range page.Worklogs {
+		started, err := time.Parse(startedLayout, x.Started)
+		if err == nil && started.Truncate(time.Second).Equal(at) && x.TimeSpentSeconds == w.TimeSpentSeconds && x.Author.AccountID == c.me {
+			return x.ID, nil
+		}
+	}
+	return "", nil
 }
 
 func (c *client) TestConnection(ctx context.Context) (tracker.Account, error) {

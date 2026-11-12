@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // Fake is a Client with canned outcomes, for tests above the HTTP client.
@@ -19,6 +20,9 @@ type Fake struct {
 	PostErrs map[string]error
 	// Account is what TestConnection names.
 	Account Account
+	// Lose, keyed by ticket, makes PostWorklog keep the worklog but answer
+	// ErrUnreachable, as when Jira commits and the answer never arrives.
+	Lose map[string]bool
 
 	mu       sync.Mutex
 	calls    []string
@@ -33,7 +37,7 @@ type PostedWorklog struct {
 }
 
 // Calls lists every call made, in order: "summary KEY", "worklog KEY",
-// "test".
+// "find KEY", "test".
 func (f *Fake) Calls() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -76,7 +80,24 @@ func (f *Fake) PostWorklog(ctx context.Context, key string, w Worklog) (string, 
 	}
 	id := fmt.Sprintf("W%d", len(f.worklogs)+1)
 	f.worklogs = append(f.worklogs, PostedWorklog{Key: key, ID: id, Worklog: w})
+	if f.Lose[key] {
+		return "", fmt.Errorf("%w: the answer was lost", ErrUnreachable)
+	}
 	return id, nil
+}
+
+func (f *Fake) FindWorklog(ctx context.Context, key string, w Worklog) (string, error) {
+	if err := f.record("find " + key); err != nil {
+		return "", err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.worklogs {
+		if p.Key == key && p.Worklog.Started.Truncate(time.Second).Equal(w.Started.Truncate(time.Second)) && p.Worklog.TimeSpentSeconds == w.TimeSpentSeconds {
+			return p.ID, nil
+		}
+	}
+	return "", nil
 }
 
 func (f *Fake) TestConnection(ctx context.Context) (Account, error) {

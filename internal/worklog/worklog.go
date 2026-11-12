@@ -4,17 +4,14 @@
 // Every write (Confirm, and each outcome Sync records) happens under one
 // flock on sync.lock (Punchcard ADR 0002). Sync holds it across its POSTs,
 // so nothing can change a worklog while it is being sent, and two syncs
-// never send the same one. Saves are atomic and synced to disk, and a
-// worklog is marked synced the moment the tracker answers, before the next
-// is sent.
+// never send the same one. Saves are atomic and synced to disk.
 //
-// One window remains: the tracker has taken a worklog but Sift has not
-// recorded it. That happens when Sift dies between the tracker's answer
-// and the save, when the save fails, or when the answer is lost (a timeout
-// after the tracker committed). The worklog is then still owed, and the
-// next sync sends it again, which leaves a duplicate in the tracker.
-// Closing it needs a way to ask the tracker what it already holds, which
-// the tracker seam does not have.
+// No worklog is sent twice. Before each POST the worklog is saved as
+// attempted, and the mark clears only when the outcome is certain: taken,
+// refused, or rejected credentials. When the outcome is unknown (Sift died,
+// the answer was lost to a timeout, or recording it failed), the next sync
+// asks the tracker whether it already holds that worklog (FindWorklog)
+// before sending, and records it as synced if it does.
 package worklog
 
 import (
@@ -60,6 +57,9 @@ type Worklog struct {
 	RemoteID string    `json:"remoteId,omitempty"` // the tracker's id, once synced
 	Error    string    `json:"error,omitempty"`    // why the last send failed
 	SyncedAt time.Time `json:"syncedAt,omitzero"`
+	// Attempted: a send began and its outcome is not known. The tracker
+	// may hold it, so the next sync looks before sending again.
+	Attempted bool `json:"attempted,omitempty"`
 }
 
 // Version is the worklogs.json schema this binary writes and reads.
@@ -125,8 +125,8 @@ func (s Store) Confirm(day string, ws []Worklog, local bool) ([]Worklog, error) 
 	for _, w := range all {
 		if w.Date != day {
 			kept = append(kept, w)
-		} else if w.State == Synced {
-			synced[w.Ticket] = w
+		} else if w.State == Synced || w.Attempted {
+			synced[w.Ticket] = w // the tracker has it, or may: keep it as it is
 			kept = append(kept, w)
 		}
 	}
@@ -212,28 +212,54 @@ func (s Store) Sync(ctx context.Context, client tracker.Client, noTracker bool) 
 		if !w.State.owed() {
 			continue
 		}
+		tw := tracker.Worklog{Started: w.Started, TimeSpentSeconds: w.Minutes * 60, Comment: w.Comment}
+		if w.Attempted {
+			fctx, cancel := context.WithTimeout(ctx, PostBudget)
+			id, ferr := client.FindWorklog(fctx, w.Ticket, tw)
+			cancel()
+			if ferr != nil {
+				errs = append(errs, fmt.Errorf("could not check whether %s on %s was already sent, so it was not sent again: %w", w.Ticket, w.Date, ferr))
+				break
+			}
+			if id != "" {
+				w.State, w.RemoteID, w.Error, w.SyncedAt, w.Attempted = Synced, id, "", time.Now().UTC().Truncate(time.Second), false
+				if err := s.save(all); err != nil {
+					errs = append(errs, err)
+					break
+				}
+				rep.Sent = append(rep.Sent, *w)
+				continue
+			}
+		}
+		w.Attempted = true
+		if err := s.save(all); err != nil {
+			w.Attempted = false
+			errs = append(errs, fmt.Errorf("%s on %s was not sent: %w", w.Ticket, w.Date, err))
+			break
+		}
 		pctx, cancel := context.WithTimeout(ctx, PostBudget)
-		id, perr := client.PostWorklog(pctx, w.Ticket, tracker.Worklog{Started: w.Started, TimeSpentSeconds: w.Minutes * 60, Comment: w.Comment})
+		id, perr := client.PostWorklog(pctx, w.Ticket, tw)
 		cancel()
 		var refused *tracker.Refusal
 		stop := false
 		switch {
 		case perr == nil:
-			w.State, w.RemoteID, w.Error, w.SyncedAt = Synced, id, "", time.Now().UTC().Truncate(time.Second)
+			w.State, w.RemoteID, w.Error, w.SyncedAt, w.Attempted = Synced, id, "", time.Now().UTC().Truncate(time.Second), false
 		case errors.Is(perr, tracker.ErrUnauthorized):
+			w.Attempted = false // rejected credentials create nothing
 			errs = append(errs, perr)
 			stop = true
 		case errors.As(perr, &refused):
-			w.State, w.Error = Failed, perr.Error()
+			w.State, w.Error, w.Attempted = Failed, perr.Error(), false
 			errs = append(errs, fmt.Errorf("%s on %s: %w", w.Ticket, w.Date, perr))
-		default:
+		default: // no answer: the tracker may have taken it, so it stays attempted
 			w.State, w.Error = Failed, perr.Error()
 			errs = append(errs, perr)
 			stop = true
 		}
 		if err := s.save(all); err != nil {
 			if perr == nil {
-				err = fmt.Errorf("the tracker took %s on %s as %s, but it could not be recorded, so the next sync may send it again: %w", w.Ticket, w.Date, id, err)
+				err = fmt.Errorf("the tracker took %s on %s as %s, but it could not be recorded; the next sync finds it there rather than sending it again: %w", w.Ticket, w.Date, id, err)
 			}
 			errs = append(errs, err)
 			stop = true

@@ -21,6 +21,11 @@ type Client interface {
 	// TestConnection checks the site, then the credentials, and names the
 	// account.
 	TestConnection(ctx context.Context) (Account, error)
+	// FindWorklog looks on key for a worklog these credentials posted with
+	// w's start (to the second) and duration, and returns its id, or ""
+	// when there is none. It is how a send whose answer was lost is
+	// settled without sending it twice.
+	FindWorklog(ctx context.Context, key string, w Worklog) (string, error)
 }
 
 // Worklog is what PostWorklog tells the tracker. An empty Comment is

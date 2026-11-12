@@ -66,6 +66,16 @@ type wireWorklog struct {
 	TimeSpentSeconds int    `json:"timeSpentSeconds"`
 }
 
+// wireWorklogPage is GET /issue/{key}/worklog (fields we use).
+type wireWorklogPage struct {
+	Worklogs []struct {
+		wireWorklog
+		Author struct {
+			AccountID string `json:"accountId"`
+		} `json:"author"`
+	} `json:"worklogs"`
+}
+
 // wireServerInfo is GET /serverInfo (anonymous reachability).
 type wireServerInfo struct {
 	BaseURL        string `json:"baseUrl"`
