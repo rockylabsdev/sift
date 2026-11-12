@@ -1,11 +1,12 @@
 {
   "name": "sift",
   "owner": { "name": "rockylabsdev" },
+  "description": "Sift: a terminal worklog drafter",
   "plugins": [
     {
       "name": "sift",
-      "source": "./plugin",
-      "description": "Records each prompt you type as evidence for sift, the terminal worklog drafter."
+      "description": "Records your prompts as evidence, nudges about days to review, /sift, and a gate on an agent's confirm",
+      "source": { "source": "git-subdir", "url": "https://github.com/rockylabsdev/sift.git", "path": "plugin", "ref": "v0.1.0" }
     }
   ]
 }
