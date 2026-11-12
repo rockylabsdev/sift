@@ -8,3 +8,5 @@ A terminal worklog drafter
 load in every Claude Code session for this repo, including cloud sessions. As project skills they have
 no `pstack:` prefix: use `/setup-pstack`, `/poteto-mode`, `/poteto-help`, and so on. To update, re-copy
 `harness/pstack/claude-code/{skills,agents,docs,README.md}` from that repo.
+`/setup-pstack` model choices live in `.claude/rules/pstack-models.md` (committed, so cloud sessions
+keep them) rather than `~/.claude/rules/`; re-run `/setup-pstack` and save the result there to change them.
