@@ -27,7 +27,14 @@ func (s source) Load(day time.Time) (tui.Input, error) {
 		return tui.Input{}, err
 	}
 	return tui.Input{Start: l.Start, Events: l.Events, Day: l.Day, Decisions: l.Decisions,
-		Round: l.Config.Round, IdleGap: l.Config.IdleGap, Meetings: calendarNote(l.Calendar)}, nil
+		Round: l.Config.Round, IdleGap: l.Config.IdleGap, Meetings: s.note(l)}, nil
+}
+
+func (s source) note(l Loaded) string {
+	if s.r.demoMeetings != nil {
+		return "demo day · nothing is kept"
+	}
+	return calendarNote(l.Calendar)
 }
 
 func (s source) Update(day time.Time, change func(*draft.Decisions) error) error {

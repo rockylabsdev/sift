@@ -1,27 +1,47 @@
 # Sift
 A terminal worklog drafter. Your work, accounted for.
 
-Sift records evidence as you work, derives your day from it, and drafts one worklog per ticket for you to check. Nothing is started or stopped.
+Sift records evidence as you work, derives your day from it, and drafts one worklog per ticket for you to check and send. Nothing is started or stopped.
 
-## Try it
+## Install
 
 ```sh
 go install ./cmd/sift
-claude plugin marketplace add rockylabsdev/sift   # or: claude --plugin-dir ./plugin
+claude plugin marketplace add rockylabsdev/sift
 claude plugin install sift@sift
 ```
 
-Each prompt you type in Claude Code is now an event for the ticket its directory names (a `.sift` file, else the branch). Then:
+Each prompt you type in Claude Code is now an event for the ticket its directory names: a `.sift` file (first line, e.g. `PUN-142`), else the branch name. An agent's own activity is never counted.
+
+Try it before any of that with `sift demo`, which opens the review on a seeded fake day and keeps nothing.
+
+## Use
 
 ```sh
-sift events            # today's evidence
-sift draft             # the worklogs today would produce
-sift draft --date 2026-11-10 --json
+sift                   # review the earliest day waiting, else today
+sift status            # today's totals and the days waiting
+sift confirm           # accept a day: one worklog per ticket, sent
+sift log               # this week's worklogs
 ```
 
-Sift drafts and never sends yet. Review, confirm, the calendar and Jira come in later slices. The event format is a public contract, described in [docs/evidence.md](docs/evidence.md).
+In the review, `↑↓` selects a stretch, `t` assigns a meeting, gap or ticketless time to a ticket, `+ −` adjust a ticket by 5 minutes, `e` inspects a stretch (its events, where each ticket came from, and silences close to the idle gap), `c` confirms, `[ ]` change day and `T` changes theme (Graphite, Dusk, Paper).
 
-The review screen is still a prototype over a fake day: `go run ./cmd/prototype-daystrip` (96×30 or larger, truecolour; `T` changes theme).
+Work no collector saw: `sift block PUN-142 10:00-11:30`. In Claude Code, `/sift` shows the draft and confirms it with your yes. An agent cannot confirm a day on its own: `sift confirm` from an agent only proposes the draft, and the plugin puts `sift confirm --yes` to you.
+
+## Connect
+
+```sh
+sift setup jira --site acme.atlassian.net --email you@acme.com   # reads the API token from stdin
+sift setup calendar --email you@acme.com                         # reads the iCal subscription address from stdin
+sift setup none                                                  # no tracker: confirmed worklogs stay local
+sift import punchcard                                            # keep punchcard's worklog history in sift log
+```
+
+Secrets go to the macOS Keychain, else a 0600 file under `~/.config/sift/secrets`. Meetings leave out all-day events, declined and cancelled invitations, events marked free, and events with no one else invited; `sift draft` lists what it left out and why.
+
+Settings live in `~/.config/sift/config.json`: `idle_gap_minutes` (default 10), `round_minutes` (0, 5 or 15), `events_beat_meetings`, `projects` (the branch rule takes only these projects' keys) and `theme`. The event format is a public contract, described in [docs/evidence.md](docs/evidence.md).
+
+The design prototype the review grew from is still in `cmd/prototype-daystrip`.
 
 ## Claude Code skills
 

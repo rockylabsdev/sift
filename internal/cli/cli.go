@@ -88,6 +88,7 @@ const usage = `sift: a terminal worklog drafter
   sift log [--from D] [--to D]       worklogs, this week by default
   sift setup jira|calendar|none      connect a tracker or a calendar
   sift import punchcard              copy punchcard's worklog history
+  sift demo                          review a seeded fake day; nothing is kept
   sift version
 
   --json (or SIFT_JSON=1) writes the result as a JSON envelope.
@@ -123,6 +124,7 @@ func Run(args []string, env Env) int {
 		"sync":    r.sync,
 		"log":     r.log,
 		"import":  r.importPunchcard,
+		"demo":    r.demoCmd,
 	}
 	cmd, ok := cmds[r.command]
 	if !ok {

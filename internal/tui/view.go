@@ -676,6 +676,9 @@ func (m Model) View() tea.View {
 		}
 		brand := " " + bold(th.text, "sift") + " " + fg(th.focus, "▰") + "   " + fg(th.text, m.in.Start.Format("Mon 2 Jan")) + fg(th.dim, " · "+state)
 		right := fmt.Sprintf("%s · %s to send ", plural(len(m.dr.Sendable()), "ticket"), dur(m.dr.Total))
+		if m.dr.Confirmed {
+			right = fmt.Sprintf("%s · %s confirmed ", plural(len(m.dr.Sendable()), "worklog"), dur(m.dr.Total))
+		}
 		out = append(out, spread(brand, fg(th.muted, right), m.w))
 		evRows, sep, shown := m.laneLayout()
 		topH := dayHeight(shown, evRows, sep)

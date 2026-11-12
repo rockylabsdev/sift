@@ -93,7 +93,7 @@ func calendarNote(c calendar.Day) string {
 	switch {
 	case c.Problem != "":
 		return c.Problem
-	case c.Source == calendar.None:
+	case c.Source == calendar.None || c.Source == "":
 		return "no calendar connected"
 	case len(c.Skipped) > 0:
 		return fmt.Sprintf("calendar: %s, %d left out", plural(len(c.Meetings), "meeting"), len(c.Skipped))
