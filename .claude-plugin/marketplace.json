@@ -1,0 +1,11 @@
+{
+  "name": "sift",
+  "owner": { "name": "rockylabsdev" },
+  "plugins": [
+    {
+      "name": "sift",
+      "source": "./plugin",
+      "description": "Records each prompt you type as evidence for sift, the terminal worklog drafter."
+    }
+  ]
+}
