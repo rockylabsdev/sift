@@ -23,7 +23,16 @@ type Input struct {
 	Decisions draft.Decisions
 	Round     int
 	IdleGap   int
-	Meetings  string // where meetings came from, for the screen to say
+	Meetings  string            // where meetings came from, for the screen to say
+	Today     time.Time         // midnight today, to say how far back the day is
+	Tracker   string            // where confirmed worklogs go: "Jira", or "" for the local log
+	Sent      map[string]Status // a confirmed day's worklogs, by ticket, as the outbox has them
+}
+
+// Status is where one confirmed worklog stands.
+type Status struct {
+	State string // pending, failed, synced, local
+	Error string
 }
 
 // Source loads days and records decisions.

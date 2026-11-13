@@ -27,8 +27,22 @@ func (s source) Load(day time.Time) (tui.Input, error) {
 	if err != nil {
 		return tui.Input{}, err
 	}
-	return tui.Input{Start: l.Start, Events: l.Events, Day: l.Day, Decisions: l.Decisions,
-		Round: l.Config.Round, IdleGap: l.Config.IdleGap, Meetings: s.note(l)}, nil
+	now := s.r.Now()
+	in := tui.Input{Start: l.Start, Events: l.Events, Day: l.Day, Decisions: l.Decisions,
+		Round: l.Config.Round, IdleGap: l.Config.IdleGap, Meetings: s.note(l),
+		Today: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()), Tracker: s.Tracker()}
+	if l.Decisions.Confirmed != nil {
+		if store, err := s.r.worklogs(); err == nil {
+			key := l.Start.Format("2006-01-02")
+			if ws, err := store.List(key, key); err == nil {
+				in.Sent = map[string]tui.Status{}
+				for _, w := range ws {
+					in.Sent[w.Ticket] = tui.Status{State: string(w.State), Error: w.Error}
+				}
+			}
+		}
+	}
+	return in, nil
 }
 
 func (s source) note(l Loaded) string {

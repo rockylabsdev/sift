@@ -26,6 +26,7 @@ type fake struct {
 	events   []evidence.Event
 	meetings []derive.Meeting
 	dec      map[string]draft.Decisions
+	sent     map[string]Status
 }
 
 func key(s string) *string { return &s }
@@ -72,7 +73,7 @@ func (f *fake) Load(day time.Time) (Input, error) {
 	}
 	d := f.dec[day.Format("2006-01-02")]
 	return Input{Start: day, Events: mine, Day: derive.For(day, in, ms, derive.Defaults), Decisions: d,
-		IdleGap: 10, Meetings: "calendar: test"}, nil
+		IdleGap: 10, Meetings: "calendar: test", Today: day0.AddDate(0, 0, 2), Tracker: "Jira", Sent: f.sent}, nil
 }
 
 func (f *fake) Update(day time.Time, change func(*draft.Decisions) error) error {
@@ -215,8 +216,8 @@ func TestAConfirmedDayRefusesChanges(t *testing.T) {
 		t.Fatalf("msg %q total %d", m.msg, m.dr.Total)
 	}
 	fr := frame(sized(m, 120, 36))
-	if !strings.Contains(fr, "Tue 10 Nov · confirmed") {
-		t.Fatalf("the header does not say confirmed")
+	if !strings.Contains(fr, "· read-only") {
+		t.Fatalf("the header does not say confirmed and read-only")
 	}
 	if !strings.Contains(fr, "confirmed, read-only") || strings.Contains(fr, "t assign") {
 		t.Fatalf("a confirmed day offers keys it refuses:\n%s", fr)
@@ -241,7 +242,7 @@ func TestConfirmAsksFirst(t *testing.T) {
 		t.Fatalf("any other key cancels: %+v %q", m.dr.Confirmed, m.msg)
 	}
 	m = press(m, "c", "y")
-	if !m.dr.Confirmed || !strings.Contains(frame(m), "Tue 10 Nov · confirmed") {
+	if !m.dr.Confirmed || !strings.Contains(frame(m), "· read-only") {
 		t.Fatalf("y confirms")
 	}
 	if m = press(m, "c"); m.msg != "Already confirmed." {
@@ -258,5 +259,22 @@ func fmtScan(name string, w, h *int) {
 	}
 	for _, c := range hs {
 		*h = *h*10 + int(c-'0')
+	}
+}
+
+func TestAPastDaySaysSo(t *testing.T) {
+	f := newFake()
+	fr := frame(sized(New(f, day0, ""), 120, 36))
+	if head := strings.SplitN(fr, "\n", 2)[0]; !strings.Contains(head, "Tue 10 Nov · 2 days ago") || !strings.Contains(head, "waiting for review") {
+		t.Fatalf("a past unconfirmed day must say it is waiting:\n%s", strings.SplitN(fr, "\n", 2)[0])
+	}
+	f.dec["2026-11-10"] = draft.Decisions{Confirmed: &draft.Confirmed{At: hm(18, 5), Worklogs: []draft.Worklog{
+		{Ticket: "PUN-142", Minutes: 60, Started: hm(9, 0)}, {Ticket: "OPS-77", Minutes: 30, Started: hm(9, 50)}}}}
+	f.sent = map[string]Status{"PUN-142": {State: "synced"}, "OPS-77": {State: "failed", Error: "Jira answered 503"}}
+	fr = frame(sized(New(f, day0, ""), 120, 36))
+	for _, want := range []string{"confirmed Tue 18:05 · read-only", "3 confirmed", "sent to Jira", "! not sent yet", "Jira answered 503"} {
+		if !strings.Contains(fr, want) {
+			t.Errorf("missing %q:\n%s", want, fr)
+		}
 	}
 }
