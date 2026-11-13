@@ -638,7 +638,14 @@ func (m Model) draftBox(w, h int) []string {
 		if wl.Assigned > 0 {
 			sub = "incl. " + dur(wl.Assigned) + " assigned"
 		}
-		body = append(body, line(key, bold(th.text, dur(wl.Minutes))), " "+fg(th.muted, "from "+m.clockT(wl.Started)+"  ")+fg(th.dim, sub))
+		second := fg(th.muted, "from "+m.clockT(wl.Started)+"  ") + fg(th.dim, sub)
+		if m.dr.Confirmed {
+			second = fg(th.muted, "from "+m.clockT(wl.Started)+" · ") + m.sentLine(wl.Ticket)
+		}
+		body = append(body, line(key, bold(th.text, dur(wl.Minutes))))
+		for _, l := range strings.Split(second, "\n") {
+			body = append(body, " "+l)
+		}
 		if ruled {
 			body = append(body, " "+fg(th.faint, strings.Repeat("─", iw-2)))
 		}
@@ -658,7 +665,70 @@ func (m Model) draftBox(w, h int) []string {
 	if m.in.Round > 0 {
 		body = append(body, " "+fg(th.dim, fmt.Sprintf("rounded to %dm per ticket", m.in.Round)))
 	}
-	return th.box(3, "draft", fg(th.dim, plural(len(m.dr.Sendable()), "worklog")), false, w, h, body)
+	title := "draft"
+	if m.dr.Confirmed {
+		title = "confirmed"
+	}
+	return th.box(3, title, fg(th.dim, plural(len(m.dr.Sendable()), "worklog")), false, w, h, body)
+}
+
+// ago says how far back the day is: today, yesterday, 3 days ago.
+func (m Model) ago() string {
+	if m.in.Today.IsZero() {
+		return ""
+	}
+	n := int(m.in.Today.Sub(m.in.Start).Hours()/24 + 0.5)
+	switch {
+	case n == 0:
+		return "today"
+	case n == 1:
+		return "yesterday"
+	case n > 1:
+		return fmt.Sprintf("%d days ago", n)
+	}
+	return "ahead"
+}
+
+// header names the day, how far back it is, and, in a coloured label with
+// words, whether it is waiting for review or confirmed and read-only.
+func (m Model) header() string {
+	th := m.theme_()
+	day := fg(th.text, m.in.Start.Format("Mon 2 Jan"))
+	if a := m.ago(); a != "" {
+		day += fg(th.muted, " · "+a)
+	}
+	badge := fg(th.dim, "draft")
+	right := fmt.Sprintf("%s · %s to send ", plural(len(m.dr.Sendable()), "ticket"), dur(m.dr.Total))
+	switch {
+	case m.dr.Confirmed:
+		when := ""
+		if c := m.in.Decisions.Confirmed; c != nil && !c.At.IsZero() {
+			when = " " + c.At.In(m.in.Start.Location()).Format("Mon 15:04")
+		}
+		badge = on(th.bg, &th.focus, " confirmed"+when+" · read-only ")
+		right = fmt.Sprintf("%s · %s confirmed ", plural(len(m.dr.Sendable()), "worklog"), dur(m.dr.Total))
+	case !m.in.Today.IsZero() && m.in.Start.Before(m.in.Today) && len(m.stretches()) > 0:
+		badge = on(th.bg, &th.amber, " waiting for review ")
+	}
+	brand := " " + bold(th.text, "sift") + " " + fg(th.focus, "▰") + "   " + day + "   " + badge
+	return spread(brand, fg(th.muted, right), m.w)
+}
+
+// sentLine says where a confirmed worklog stands.
+func (m Model) sentLine(t string) string {
+	th := m.theme_()
+	st, ok := m.in.Sent[t]
+	switch {
+	case !ok:
+		return fg(th.dim, "confirmed")
+	case st.State == "synced":
+		return fg(th.muted, "sent to "+m.in.Tracker)
+	case st.State == "local":
+		return fg(th.muted, "logged locally")
+	case st.State == "failed":
+		return fg(th.amber, "! not sent yet") + "\n" + fg(th.muted, st.Error)
+	}
+	return fg(th.amber, "waiting to send · sift sync")
 }
 
 func (m Model) View() tea.View {
@@ -670,16 +740,7 @@ func (m Model) View() tea.View {
 	case m.err != nil && m.in.Day.Start.IsZero():
 		out = []string{"sift: " + m.err.Error()}
 	default:
-		state := "draft"
-		if m.dr.Confirmed {
-			state = "confirmed"
-		}
-		brand := " " + bold(th.text, "sift") + " " + fg(th.focus, "▰") + "   " + fg(th.text, m.in.Start.Format("Mon 2 Jan")) + fg(th.dim, " · "+state)
-		right := fmt.Sprintf("%s · %s to send ", plural(len(m.dr.Sendable()), "ticket"), dur(m.dr.Total))
-		if m.dr.Confirmed {
-			right = fmt.Sprintf("%s · %s confirmed ", plural(len(m.dr.Sendable()), "worklog"), dur(m.dr.Total))
-		}
-		out = append(out, spread(brand, fg(th.muted, right), m.w))
+		out = append(out, m.header())
 		evRows, sep, shown := m.laneLayout()
 		topH := dayHeight(shown, evRows, sep)
 		if shown < len(m.tickets) {
@@ -705,7 +766,10 @@ func (m Model) View() tea.View {
 			status = fg(th.amber, m.msg+" ")
 		}
 		keys := " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("+ −", "adjust") + key("c", "confirm") + key("[ ]", "day") + key("T", th.Name) + key("q", "quit")
-		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w {
+		if m.dr.Confirmed {
+			keys = " " + key("↑↓", "select") + key("e", "inspect") + key("[ ]", "day") + key("T", th.Name) + key("q", "quit") + fg(th.muted, "confirmed, read-only   ")
+		}
+		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && !m.dr.Confirmed {
 			keys = " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("+−", "adjust") + key("c", "confirm") + key("[]", "day") + key("q", "quit")
 		}
 		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && m.msg == "" {
