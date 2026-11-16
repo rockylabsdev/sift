@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -124,7 +125,7 @@ func (m Model) dayBox(w int) []string {
 		val[i] = make([]float64, n)
 	}
 	for _, e := range m.in.Events {
-		if e.Ticket == nil {
+		if e.Ticket == nil || !e.Origin.IsEvidence() {
 			continue
 		}
 		i, ok := idx[*e.Ticket]
@@ -186,15 +187,21 @@ func (m Model) dayBox(w int) []string {
 		var b strings.Builder
 		for c := 0; c < g; c++ {
 			a, z := col(c)
-			own := 0
+			own, agent := 0, 0
 			for mm := a; mm < z && mm < len(m.effT); mm++ {
 				if m.effT[mm] == t {
 					own++
+					if m.effA[mm] {
+						agent++
+					}
 				}
 			}
-			if own*2 >= max(z-a, 1) {
+			switch {
+			case own*2 >= max(z-a, 1) && agent*2 > own:
+				b.WriteString(on(h, bgAt(c), "┅"))
+			case own*2 >= max(z-a, 1):
 				b.WriteString(on(h, bgAt(c), "━"))
-			} else {
+			default:
 				b.WriteString(on(th.faint, bgAt(c), "─"))
 			}
 		}
@@ -272,9 +279,9 @@ func (m Model) dayBox(w int) []string {
 	if u.Ticketless > 0 {
 		sum += fg(th.dim, "  ·  ") + fg(th.amber, "? no ticket "+dur(u.Ticketless))
 	}
-	note := fg(th.dim, "⣿ event density, one scale  ") + fg(th.muted, "━ counted ")
+	note := fg(th.dim, "⣿ your prompts  ") + fg(th.muted, "━ you  ┅ agents ")
 	if lipgloss.Width(sum)+lipgloss.Width(note)+1 > w-2 {
-		note = fg(th.muted, "━ counted ")
+		note = fg(th.muted, "━ you  ┅ agents ")
 	}
 	return append(out, spread(sum, note, w-2))
 }
@@ -301,13 +308,29 @@ func (m Model) assignedTo(t string) string {
 	return fg(th.muted, "assigned to ") + bold(m.hue(t), t)
 }
 
+// eventsIn counts the user's own events in s; agent activity is reported
+// as minutes, not events.
 func (m Model) eventsIn(s derive.Stretch) (n int) {
 	for _, e := range m.in.Events {
-		if !e.At.Before(s.From) && e.At.Before(s.To) {
+		if e.Origin.IsEvidence() && !e.At.Before(s.From) && e.At.Before(s.To) {
 			n++
 		}
 	}
 	return n
+}
+
+// agentIn is the agent minutes counted in s and how many subagents ran.
+func (m Model) agentIn(s derive.Stretch) (minutes, subagents int) {
+	for _, x := range s.Agent {
+		minutes += x
+	}
+	seen := map[string]bool{}
+	for _, e := range m.in.Events {
+		if !e.Origin.IsEvidence() && e.AgentID != "" && !e.At.Before(s.From) && e.At.Before(s.To) {
+			seen[e.AgentID] = true
+		}
+	}
+	return minutes, len(seen)
 }
 
 // tableTickets is the tickets with a column: as many as fit.
@@ -381,6 +404,9 @@ func (m Model) stretchBox(w, h int) []string {
 			}
 			ev := m.eventsIn(s)
 			name = fg(th.dim, plural(ev, "event"))
+			if am, _ := m.agentIn(s); am > 0 {
+				name += fg(th.dim, " · agents "+dur(am))
+			}
 			if s.Unassigned > 0 {
 				mark = fg(tone, "?")
 			}
@@ -395,6 +421,12 @@ func (m Model) stretchBox(w, h int) []string {
 				parts = append(parts, fg(th.amber, "no ticket "+dur(s.Unassigned))+fg(th.muted, ", ")+m.assignedTo(assigned))
 			}
 			more = strings.Join(parts, fg(th.dim, " · ")) + fg(th.dim, " · from "+plural(ev, "event"))
+			if am, subs := m.agentIn(s); am > 0 {
+				more += fg(th.dim, " · agents "+dur(am))
+				if subs > 0 {
+					more += fg(th.dim, ", "+plural(subs, "subagent"))
+				}
+			}
 		}
 		offSum += off
 		row := m.clockT(s.From) + "–" + m.clockT(s.To) + " " + mark + " " + pad(name, whatW)
@@ -481,10 +513,19 @@ func (m Model) inspectBox(w, h int) []string {
 		return th.box(2, "inspect", "", true, w, h, []string{" " + fg(th.dim, "Nothing to inspect.")})
 	}
 	iw := w - 2
-	var evs []int
+	var evs []int // the user's own events; agent activity is summed below
+	agentEvents, subagents := 0, map[string]bool{}
 	for i, e := range m.in.Events {
-		if !e.At.Before(s.From) && e.At.Before(s.To) {
+		if e.At.Before(s.From) || !e.At.Before(s.To) {
+			continue
+		}
+		if e.Origin.IsEvidence() {
 			evs = append(evs, i)
+		} else {
+			agentEvents++
+			if e.AgentID != "" {
+				subagents[e.AgentID] = true
+			}
 		}
 	}
 	assigned := m.in.Decisions.Assign[draft.ID(s)]
@@ -504,6 +545,7 @@ func (m Model) inspectBox(w, h int) []string {
 		n       int
 		via     map[string]bool
 		counted int
+		agent   int
 	}
 	per := map[string]*src{}
 	get := func(t string) *src {
@@ -515,6 +557,9 @@ func (m Model) inspectBox(w, h int) []string {
 	for mm := m.minute(s.From); mm < m.minute(s.To); mm++ {
 		if t := m.effT[mm]; t != "" {
 			get(t).counted++
+			if m.effA[mm] {
+				get(t).agent++
+			}
 		}
 	}
 	ticketless := 0
@@ -535,16 +580,26 @@ func (m Model) inspectBox(w, h int) []string {
 		}
 		delete(per, t)
 		line := " " + pad(bold(m.hue(t), t), 10) + fg(th.text, fmt.Sprintf("%7s", dur(x.counted))) + fg(th.muted, " counted")
+		if x.agent > 0 {
+			line += fg(th.muted, fmt.Sprintf(" (agents %s)", dur(x.agent)))
+		}
 		if x.n > 0 {
 			var via []string
 			for v := range x.via {
 				via = append(via, v)
 			}
 			line += fg(th.dim, " · "+plural(x.n, "prompt")+" · ") + fg(th.muted, strings.Join(via, ", "))
-		} else {
+		} else if x.agent == 0 {
 			line += fg(th.dim, " · assigned by you")
 		}
 		body = append(body, line)
+	}
+	if agentEvents > 0 {
+		who := "the main agent"
+		if len(subagents) > 0 {
+			who = plural(len(subagents), "subagent")
+		}
+		body = append(body, " "+fg(th.muted, "┅ agents: ")+fg(th.dim, who+" worked while you were not prompting; this fills only time your own evidence leaves"))
 	}
 	if ticketless > 0 {
 		body = append(body, " "+fg(th.amber, "? "+plural(ticketless, "prompt")+" named no ticket")+fg(th.muted, "; t assigns their time"))
@@ -552,18 +607,33 @@ func (m Model) inspectBox(w, h int) []string {
 	if s.Kind == derive.InMeet && len(evs) > 0 {
 		body = append(body, " "+fg(th.amber, "! "+plural(len(evs), "event")+" fired during it")+fg(th.muted, "; the meeting wins until you assign it"))
 	}
-	worst, at := 0, time.Time{}
-	for k := 1; k < len(evs); k++ {
-		a, b := m.in.Events[evs[k-1]].At, m.in.Events[evs[k]].At
-		if d := int(b.Sub(a) / time.Minute); d > worst {
-			worst, at = d, b
+	// the silence the idle-gap rule acts on is between any two pieces of
+	// evidence, an agent's included: a tool run covers its whole span
+	type mark struct{ from, to time.Time }
+	var marks []mark
+	for _, e := range m.in.Events {
+		if e.At.Before(s.From) || !e.At.Before(s.To) {
+			continue
+		}
+		marks = append(marks, mark{e.At.Add(-time.Duration(e.SpanMs) * time.Millisecond), e.At})
+	}
+	sort.Slice(marks, func(i, j int) bool { return marks[i].from.Before(marks[j].from) })
+	worst, at, end := 0, time.Time{}, time.Time{}
+	for k, x := range marks {
+		if k > 0 {
+			if d := int(x.from.Sub(end) / time.Minute); d > worst {
+				worst, at = d, x.from
+			}
+		}
+		if x.to.After(end) {
+			end = x.to
 		}
 	}
 	gap := m.in.IdleGap
 	switch {
-	case len(evs) < 2:
+	case len(marks) < 2:
 	case worst >= gap-2:
-		body = append(body, " "+fg(th.amber, fmt.Sprintf("! longest silence +%dm before %s", worst, m.clockT(at)))+fg(th.muted, fmt.Sprintf(", %s inside the %dm idle gap; a slower prompt would have split this stretch", dur(gap-worst), gap)))
+		body = append(body, " "+fg(th.amber, fmt.Sprintf("! longest silence +%dm before %s", worst, m.clockT(at)))+fg(th.muted, fmt.Sprintf(", %s inside the %dm idle gap; one more minute of silence would have split this stretch", dur(gap-worst), gap)))
 	default:
 		body = append(body, " "+fg(th.dim, fmt.Sprintf("longest silence +%dm, well inside the %dm idle gap", worst, gap)))
 	}
@@ -634,9 +704,16 @@ func (m Model) draftBox(w, h int) []string {
 		if wl.ByHand != 0 {
 			key += fg(th.amber, "  "+signed(wl.ByHand)+" by hand")
 		}
-		sub := ""
+		var incl []string
+		if wl.Agent > 0 {
+			incl = append(incl, dur(wl.Agent)+" agents")
+		}
 		if wl.Assigned > 0 {
-			sub = "incl. " + dur(wl.Assigned) + " assigned"
+			incl = append(incl, dur(wl.Assigned)+" assigned")
+		}
+		sub := ""
+		if len(incl) > 0 {
+			sub = "incl. " + strings.Join(incl, ", ")
 		}
 		second := fg(th.muted, "from "+m.clockT(wl.Started)+"  ") + fg(th.dim, sub)
 		if m.dr.Confirmed {

@@ -37,7 +37,9 @@ func TicketFor(dir string, projects []string) (*string, *Found) {
 			break
 		}
 	}
-	if b := gitOut(dir, "symbolic-ref", "--short", "-q", "HEAD"); b != "" {
+	// Claude Code names a subagent's worktree branch worktree-agent-<hex id>;
+	// a hex id can look like a key (agent-3f…), and it never names a ticket.
+	if b := gitOut(dir, "symbolic-ref", "--short", "-q", "HEAD"); b != "" && !strings.HasPrefix(b, "worktree-agent-") {
 		for _, k := range keyRe.FindAllString(b, -1) {
 			k = strings.ToUpper(k)
 			if inProjects(k, projects) {

@@ -69,6 +69,15 @@ func (r *run) events(args []string) (any, func(io.Writer), error) {
 			if e.Ticket != nil {
 				t, via = *e.Ticket, e.Found.Via+" "+e.Found.Value
 			}
+			if e.Origin == evidence.Agent {
+				via = "agent " + e.Kind
+				if e.AgentID != "" {
+					via += " " + e.AgentID
+				}
+				if e.SpanMs > 0 {
+					via += fmt.Sprintf(" (%s)", time.Duration(e.SpanMs)*time.Millisecond)
+				}
+			}
 			since := ""
 			if i > 0 {
 				since = fmt.Sprintf("+%dm", int(e.At.Sub(prev)/time.Minute))
@@ -125,7 +134,7 @@ func (r *run) load(date string) (Loaded, error) {
 		if e.Ticket != nil {
 			k = *e.Ticket
 		}
-		in = append(in, derive.Event{At: e.At, Ticket: k})
+		in = append(in, derive.Event{At: e.At, Ticket: k, Agent: e.Origin == evidence.Agent, Span: time.Duration(e.SpanMs) * time.Millisecond})
 		if inDay(start, e.At) {
 			l.Events = append(l.Events, e)
 		}
@@ -134,7 +143,7 @@ func (r *run) load(date string) (Loaded, error) {
 	if err != nil {
 		return l, err
 	}
-	set := derive.Settings{IdleGap: cfg.IdleGap, Tail: derive.Defaults.Tail, EventsWin: cfg.EventsWin}
+	set := derive.Settings{IdleGap: cfg.IdleGap, Tail: derive.Defaults.Tail, EventsWin: cfg.EventsWin, Agent: derive.AgentMode(cfg.AgentTime)}
 	for _, b := range l.Decisions.Blocks {
 		set.Blocks = append(set.Blocks, derive.Block{From: b.From, To: b.To, Ticket: b.Ticket})
 	}
@@ -201,6 +210,9 @@ func writeDraft(w io.Writer, d Draft, loc *time.Location, md bool) {
 	}
 	for _, wl := range d.Worklogs {
 		var notes []string
+		if wl.Agent > 0 {
+			notes = append(notes, "agents "+dur(wl.Agent))
+		}
 		if wl.Assigned > 0 {
 			notes = append(notes, "assigned "+dur(wl.Assigned))
 		}

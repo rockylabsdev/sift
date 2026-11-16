@@ -28,8 +28,13 @@ const (
 	Agent  Origin = "agent"
 )
 
-// IsEvidence reports whether an act of this origin counts as the user working.
+// IsEvidence reports whether an act of this origin is the user's own work.
 func (o Origin) IsEvidence() bool { return o == Hand || o == Prompt }
+
+// Known reports whether the log keeps events of this origin: the user's
+// own acts, and an agent's activity, which only fills time the user's
+// evidence leaves unclaimed.
+func (o Origin) Known() bool { return o.IsEvidence() || o == Agent }
 
 // Found is how an event's ticket was told.
 type Found struct {
@@ -47,10 +52,14 @@ type Event struct {
 	Found  *Found    `json:"found"`  // null exactly when ticket is null
 	Dir    string    `json:"dir"`    // the session's directory
 	Origin Origin    `json:"origin"`
+
+	Session string `json:"session,omitempty"` // the agent session, when the collector knows it
+	AgentID string `json:"agentId,omitempty"` // the subagent, for an agent event from one
+	SpanMs  int64  `json:"spanMs,omitempty"`  // how long the act ran, ending at At (a tool call)
 }
 
-// ErrNotEvidence: the event's origin is not the user's own act.
-var ErrNotEvidence = errors.New("only hand and prompt origins are evidence")
+// ErrNotEvidence: the event's origin is not one the log keeps.
+var ErrNotEvidence = errors.New("only hand, prompt and agent origins are evidence")
 
 // ErrBusy: another writer held the lock for the whole wait.
 var ErrBusy = errors.New("the evidence log is locked by another sift")
@@ -67,7 +76,7 @@ func (l Log) file(t time.Time) string {
 
 // Append writes e as one line. It refuses events that are not evidence.
 func (l Log) Append(e Event) error {
-	if !e.Origin.IsEvidence() {
+	if !e.Origin.Known() {
 		return ErrNotEvidence
 	}
 	if (e.Ticket == nil) != (e.Found == nil) {
@@ -132,7 +141,7 @@ func (l Log) Between(from, to time.Time) ([]Event, []Problem, error) {
 				problems = append(problems, Problem{path, n, fmt.Sprintf("schema v%d is newer than this sift reads (v%d)", e.V, Version)})
 				continue
 			}
-			if !e.At.Before(from) && e.At.Before(to) && e.Origin.IsEvidence() {
+			if !e.At.Before(from) && e.At.Before(to) && e.Origin.Known() {
 				out = append(out, e)
 			}
 		}

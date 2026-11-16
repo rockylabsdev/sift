@@ -34,14 +34,24 @@ func TestAppendThenRead(t *testing.T) {
 	}
 }
 
-func TestAgentActivityIsNotEvidence(t *testing.T) {
+func TestOnlyKnownOriginsAreKept(t *testing.T) {
 	l := Log{Dir: t.TempDir()}
-	err := l.Append(Event{At: time.Now(), Origin: Agent})
-	if !errors.Is(err, ErrNotEvidence) {
+	if err := l.Append(Event{At: time.Now(), Origin: "bot"}); !errors.Is(err, ErrNotEvidence) {
 		t.Fatalf("err = %v, want ErrNotEvidence", err)
 	}
 	if _, err := os.Stat(filepath.Join(l.Dir, "events")); !os.IsNotExist(err) {
 		t.Errorf("a refused event still created the log")
+	}
+	at := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	if err := l.Append(Event{At: at, Kind: "tool", Origin: Agent, Session: "s1", AgentID: "a7", SpanMs: 90000}); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := l.Between(at, at.Add(time.Second))
+	if len(got) != 1 || got[0].Origin != Agent || got[0].SpanMs != 90000 || got[0].AgentID != "a7" {
+		t.Fatalf("an agent event reads back as %+v", got)
+	}
+	if got[0].Origin.IsEvidence() {
+		t.Error("an agent event is never the user's own act")
 	}
 }
 
@@ -77,7 +87,7 @@ not json
 {"v":1,"at":"2026-11-10T09:02:00Z","origin":"agent"}
 `), 0o600)
 	got, problems, err := l.Between(time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC), time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC))
-	if err != nil || len(got) != 1 || len(problems) != 2 {
+	if err != nil || len(got) != 2 || len(problems) != 2 {
 		t.Fatalf("got %d events, problems %+v, err %v", len(got), problems, err)
 	}
 }
@@ -131,5 +141,46 @@ func TestProjectsFilterTheBranchRule(t *testing.T) {
 	git(t, repo, "checkout", "-q", "-b", "release-2026")
 	if k, f := TicketFor(repo, []string{"PUN"}); k != nil || f != nil {
 		t.Fatalf("a branch with no listed project has no ticket: %v", *k)
+	}
+}
+
+func TestAClaudeCodeWorktreeBranchIsNeverATicket(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init", "-q", "-b", "worktree-agent-3f2a9c")
+	if k, _ := TicketFor(repo, nil); k != nil {
+		t.Fatalf("worktree-agent-3f2a9c read as ticket %s", *k)
+	}
+}
+
+func TestSessionsRememberTheLatestPrompt(t *testing.T) {
+	s := Sessions{Dir: t.TempDir()}
+	if k, _ := s.Recall("abc-123"); k != nil {
+		t.Fatal("an unknown session has no ticket")
+	}
+	s.Remember("abc-123", key("PUN-142"), &Found{"branch", "feature/PUN-142"})
+	k, f := s.Recall("abc-123")
+	if k == nil || *k != "PUN-142" || f.Via != "session" || f.Value != "abc-123" {
+		t.Fatalf("%v %+v", k, f)
+	}
+	s.Remember("abc-123", nil, nil)
+	if k, _ := s.Recall("abc-123"); k != nil {
+		t.Fatal("a later prompt with no ticket clears it")
+	}
+	if k, _ := s.Recall("../etc/passwd"); k != nil {
+		t.Fatal("a session id is never a path")
+	}
+}
+
+func TestAgentEventsArePacedToOneAMinute(t *testing.T) {
+	s := Sessions{Dir: t.TempDir()}
+	at := time.Now()
+	if !s.Due("s1", "PUN-142", at) || s.Due("s1", "PUN-142", at.Add(30*time.Second)) {
+		t.Fatal("a second event within the minute is skipped")
+	}
+	if !s.Due("s1", "OPS-77", at.Add(30*time.Second)) {
+		t.Fatal("another ticket in the same session is paced on its own")
+	}
+	if !s.Due("s1", "PUN-142", at.Add(61*time.Second)) {
+		t.Fatal("after a minute the next is written")
 	}
 }

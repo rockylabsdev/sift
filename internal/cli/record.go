@@ -9,10 +9,24 @@ import (
 	"github.com/rockylabsdev/sift/internal/evidence"
 )
 
-// hookInput is the part of Claude Code's UserPromptSubmit input sift reads.
+// hookInput is the part of a Claude Code hook's input sift reads. A
+// subagent's hooks carry the session of the conversation that started it,
+// its own agent_id, and its worktree as cwd.
 type hookInput struct {
-	Cwd   string `json:"cwd"`
-	Event string `json:"hook_event_name"`
+	Cwd        string `json:"cwd"`
+	Event      string `json:"hook_event_name"`
+	Session    string `json:"session_id"`
+	AgentID    string `json:"agent_id"`
+	DurationMs int64  `json:"duration_ms"`
+}
+
+// agentKinds maps the hooks that report an agent's activity to the event
+// kind they record.
+var agentKinds = map[string]string{
+	"PostToolUse":   "tool",
+	"SubagentStart": "subagent-start",
+	"SubagentStop":  "subagent-stop",
+	"Stop":          "turn-end",
 }
 
 // origin infers who is acting: an agent's shell sets CLAUDECODE or AI_AGENT.
@@ -48,7 +62,7 @@ func (r *run) record(args []string) (any, func(io.Writer), error) {
 			fmt.Fprintln(r.Stderr, "sift: reading the hook input:", err)
 			return nil, nil, nil
 		}
-		if _, err := r.append(in.Cwd, "claude-code", "prompt", evidence.Prompt); err != nil {
+		if err := r.recordHook(in); err != nil {
 			fmt.Fprintln(r.Stderr, "sift:", err)
 		}
 		return nil, nil, nil
@@ -67,7 +81,7 @@ func (r *run) record(args []string) (any, func(io.Writer), error) {
 		}
 	}
 	if !o.IsEvidence() {
-		r.notes = append(r.notes, "not recorded: an agent's own activity is not evidence")
+		r.notes = append(r.notes, "not recorded: an agent's activity is recorded by the plugin's hooks, not by sift record")
 		return map[string]any{"recorded": false, "origin": o}, nil, nil
 	}
 	e, err := r.append(cwd, source, kind, o)
@@ -90,11 +104,62 @@ func (r *run) append(cwd, source, kind string, o evidence.Origin) (evidence.Even
 	}
 	e := evidence.Event{At: r.Now(), Source: source, Kind: kind, Dir: cwd, Origin: o}
 	if cwd != "" {
-		cfg, err := r.config()
-		if err != nil { // a broken config must not lose evidence
-			fmt.Fprintln(r.Stderr, "sift: ignoring projects:", err)
-		}
-		e.Ticket, e.Found = evidence.TicketFor(cwd, cfg.Projects)
+		e.Ticket, e.Found = evidence.TicketFor(cwd, r.projects())
 	}
 	return e, evidence.Log{Dir: dir}.Append(e)
+}
+
+// projects is the configured project keys; a broken config must not lose
+// evidence, so it is reported and the unfiltered rule used.
+func (r *run) projects() []string {
+	cfg, err := r.config()
+	if err != nil {
+		fmt.Fprintln(r.Stderr, "sift: ignoring projects:", err)
+	}
+	return cfg.Projects
+}
+
+// recordHook records one Claude Code hook: the user's prompt, or an
+// agent's activity. An agent's ticket is its directory's own (a .sift
+// file, or a branch that names a key), else the ticket of the user's
+// latest prompt in the same session: subagents run in worktrees whose
+// branches rarely name one.
+func (r *run) recordHook(in hookInput) error {
+	dir, err := r.dataDir()
+	if err != nil {
+		return err
+	}
+	sessions := evidence.Sessions{Dir: dir}
+	now := r.Now()
+	e := evidence.Event{At: now, Source: "claude-code", Dir: in.Cwd, Session: in.Session}
+	if in.Cwd != "" {
+		e.Ticket, e.Found = evidence.TicketFor(in.Cwd, r.projects())
+	}
+	kind, isAgent := agentKinds[in.Event]
+	if !isAgent {
+		e.Kind, e.Origin = "prompt", evidence.Prompt
+		if in.Session != "" {
+			if err := sessions.Remember(in.Session, e.Ticket, e.Found); err != nil {
+				fmt.Fprintln(r.Stderr, "sift:", err)
+			}
+		}
+		return evidence.Log{Dir: dir}.Append(e)
+	}
+	e.Kind, e.Origin, e.AgentID = kind, evidence.Agent, in.AgentID
+	if in.Event == "PostToolUse" && in.DurationMs > 0 {
+		e.SpanMs = in.DurationMs
+	}
+	if e.Ticket == nil && in.Session != "" {
+		e.Ticket, e.Found = sessions.Recall(in.Session)
+	}
+	t := ""
+	if e.Ticket != nil {
+		t = *e.Ticket
+	}
+	// at most one a minute per session and ticket, but never drop a long
+	// run: its span is time the deriver counts
+	if e.SpanMs < 60_000 && !sessions.Due(in.Session, t, now) {
+		return nil
+	}
+	return evidence.Log{Dir: dir}.Append(e)
 }
