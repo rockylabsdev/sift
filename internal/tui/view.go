@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -606,18 +607,33 @@ func (m Model) inspectBox(w, h int) []string {
 	if s.Kind == derive.InMeet && len(evs) > 0 {
 		body = append(body, " "+fg(th.amber, "! "+plural(len(evs), "event")+" fired during it")+fg(th.muted, "; the meeting wins until you assign it"))
 	}
-	worst, at := 0, time.Time{}
-	for k := 1; k < len(evs); k++ {
-		a, b := m.in.Events[evs[k-1]].At, m.in.Events[evs[k]].At
-		if d := int(b.Sub(a) / time.Minute); d > worst {
-			worst, at = d, b
+	// the silence the idle-gap rule acts on is between any two pieces of
+	// evidence, an agent's included: a tool run covers its whole span
+	type mark struct{ from, to time.Time }
+	var marks []mark
+	for _, e := range m.in.Events {
+		if e.At.Before(s.From) || !e.At.Before(s.To) {
+			continue
+		}
+		marks = append(marks, mark{e.At.Add(-time.Duration(e.SpanMs) * time.Millisecond), e.At})
+	}
+	sort.Slice(marks, func(i, j int) bool { return marks[i].from.Before(marks[j].from) })
+	worst, at, end := 0, time.Time{}, time.Time{}
+	for k, x := range marks {
+		if k > 0 {
+			if d := int(x.from.Sub(end) / time.Minute); d > worst {
+				worst, at = d, x.from
+			}
+		}
+		if x.to.After(end) {
+			end = x.to
 		}
 	}
 	gap := m.in.IdleGap
 	switch {
-	case len(evs) < 2:
+	case len(marks) < 2:
 	case worst >= gap-2:
-		body = append(body, " "+fg(th.amber, fmt.Sprintf("! longest silence +%dm before %s", worst, m.clockT(at)))+fg(th.muted, fmt.Sprintf(", %s inside the %dm idle gap; a slower prompt would have split this stretch", dur(gap-worst), gap)))
+		body = append(body, " "+fg(th.amber, fmt.Sprintf("! longest silence +%dm before %s", worst, m.clockT(at)))+fg(th.muted, fmt.Sprintf(", %s inside the %dm idle gap; one more minute of silence would have split this stretch", dur(gap-worst), gap)))
 	default:
 		body = append(body, " "+fg(th.dim, fmt.Sprintf("longest silence +%dm, well inside the %dm idle gap", worst, gap)))
 	}

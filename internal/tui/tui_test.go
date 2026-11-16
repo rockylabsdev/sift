@@ -278,3 +278,28 @@ func TestAPastDaySaysSo(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentsBridgingASilenceIsNotAWarning(t *testing.T) {
+	f := newFake()
+	f.events = nil
+	add := func(h, m int, agent bool, span time.Duration) {
+		e := evidence.Event{At: hm(h, m), Ticket: key("PUN-150"), Found: &evidence.Found{Via: "branch", Value: "f"}, Origin: evidence.Prompt}
+		if agent {
+			e.Origin, e.SpanMs, e.AgentID = evidence.Agent, span.Milliseconds(), "d4e1"
+		}
+		f.events = append(f.events, e)
+	}
+	add(13, 0, false, 0)
+	for m := 4; m < 30; m += 3 {
+		add(13, m, true, 2*time.Minute)
+	}
+	add(13, 30, false, 0)
+	f.meetings = nil
+	fr := frame(sized(press(New(f, day0, ""), "e"), 120, 36))
+	if strings.Contains(fr, "idle gap; one more minute") || !strings.Contains(fr, "well inside the 10m idle gap") {
+		t.Fatalf("agents held the stretch together; no fragile silence:\n%s", fr)
+	}
+	if !strings.Contains(fr, "1 subagent worked while you were not prompting") {
+		t.Fatalf("the agent line is missing:\n%s", fr)
+	}
+}
