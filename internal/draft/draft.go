@@ -42,6 +42,7 @@ type Worklog struct {
 	Counted  int       `json:"counted"`  // from evidence, before decisions
 	Assigned int       `json:"assigned"` // meetings, gaps and ticketless time given to it
 	ByHand   int       `json:"byHand"`   // what the adjustment changed, after the floor
+	Agent    int       `json:"agent"`    // of Counted, minutes from agent activity
 	Started  time.Time `json:"started"`
 }
 
@@ -91,7 +92,8 @@ func Of(day derive.Day, dec Decisions, round int) Draft {
 		return w
 	}
 	for _, t := range day.Totals {
-		get(t.Ticket, t.First).Counted = t.Minutes
+		w := get(t.Ticket, t.First)
+		w.Counted, w.Agent = t.Minutes, t.Agent
 	}
 	for _, s := range day.Stretches {
 		t, ok := dec.Assign[ID(s)]

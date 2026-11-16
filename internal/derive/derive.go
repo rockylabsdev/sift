@@ -14,7 +14,20 @@ import (
 type Event struct {
 	At     time.Time
 	Ticket string
+	// Agent marks an agent's activity, not the user's: it only fills
+	// minutes the user's own evidence, meetings and blocks leave unclaimed.
+	Agent bool
+	Span  time.Duration // how long the act ran, ending at At
 }
+
+// AgentMode is how agent activity counts.
+type AgentMode string
+
+const (
+	AgentFill    AgentMode = "fill"    // fills any unclaimed minute (the default)
+	AgentWorkday AgentMode = "workday" // only between the user's first and last evidence
+	AgentOff     AgentMode = "off"
+)
 
 // Meeting is a calendar event that occupied the user.
 type Meeting struct {
@@ -35,6 +48,7 @@ type Settings struct {
 	Tail      int  // minutes credited after a stretch's last event
 	EventsWin bool // an event during a meeting beats the meeting
 	Blocks    []Block
+	Agent     AgentMode // "" is AgentFill
 }
 
 // Defaults are the rules as prototyped.
@@ -52,13 +66,15 @@ const (
 // Stretch is a run of the day with one meaning: work (split between the
 // tickets whose events fall in it), one meeting, or one gap.
 type Stretch struct {
-	From       time.Time      `json:"from"`
-	To         time.Time      `json:"to"`
-	Kind       Kind           `json:"kind"`
-	Tickets    map[string]int `json:"tickets,omitempty"`    // minutes counted per ticket
-	Unassigned int            `json:"unassigned,omitempty"` // minutes no ticket owns
-	Meeting    string         `json:"meeting,omitempty"`
-	Events     int            `json:"events"`
+	From        time.Time      `json:"from"`
+	To          time.Time      `json:"to"`
+	Kind        Kind           `json:"kind"`
+	Tickets     map[string]int `json:"tickets,omitempty"`    // minutes counted per ticket
+	Unassigned  int            `json:"unassigned,omitempty"` // minutes no ticket owns
+	Agent       map[string]int `json:"agent,omitempty"`      // of those, minutes from agent activity, by ticket ("" for none)
+	Meeting     string         `json:"meeting,omitempty"`
+	Events      int            `json:"events"`
+	AgentEvents int            `json:"agentEvents,omitempty"`
 }
 
 // Minutes is the stretch's length.
@@ -68,7 +84,8 @@ func (s Stretch) Minutes() int { return int(s.To.Sub(s.From) / time.Minute) }
 type Total struct {
 	Ticket  string    `json:"ticket"`
 	Minutes int       `json:"minutes"`
-	First   time.Time `json:"first"` // its first counted minute
+	Agent   int       `json:"agent,omitempty"` // of those, minutes from agent activity
+	First   time.Time `json:"first"`           // its first counted minute
 }
 
 // Unassigned is the day's time that no ticket owns yet.
@@ -86,17 +103,19 @@ type Run struct {
 	Kind     Kind
 	Ticket   string // a work run's ticket; "" when ticketless
 	Meeting  string
+	Agent    bool // from agent activity
 }
 
 // Day is a derived day.
 type Day struct {
-	Runs       []Run      `json:"-"`
-	Start      time.Time  `json:"start"`
-	End        time.Time  `json:"end"`
-	Stretches  []Stretch  `json:"stretches"`
-	Totals     []Total    `json:"totals"`
-	Unassigned Unassigned `json:"unassigned"`
-	Events     int        `json:"events"`
+	Runs        []Run      `json:"-"`
+	Start       time.Time  `json:"start"`
+	End         time.Time  `json:"end"`
+	Stretches   []Stretch  `json:"stretches"`
+	Totals      []Total    `json:"totals"`
+	Unassigned  Unassigned `json:"unassigned"`
+	Events      int        `json:"events"`
+	AgentEvents int        `json:"agentEvents,omitempty"`
 }
 
 // owner codes for one minute
@@ -121,21 +140,28 @@ func For(start time.Time, events []Event, meetings []Meeting, s Settings) Day {
 	n := int(end.Sub(start)/time.Minute) + 2*pad
 	idx := func(t time.Time) int { return int(t.Sub(start).Truncate(time.Minute)/time.Minute) + pad }
 
-	type ev struct{ i, owner int }
+	type ev struct{ i, owner, from int } // from: where an agent act began
 	var keys []string
 	key := map[string]int{}
 	var evs []ev
 	sorted := append([]Event(nil), events...)
 	sort.Slice(sorted, func(a, b int) bool {
 		x, y := sorted[a], sorted[b]
-		if !x.At.Equal(y.At) {
+		switch {
+		case !x.At.Equal(y.At):
 			return x.At.Before(y.At)
+		case x.Ticket != y.Ticket:
+			return x.Ticket < y.Ticket // same instant: order must not depend on input
+		case x.Agent != y.Agent:
+			return !x.Agent
 		}
-		return x.Ticket < y.Ticket // same instant: order must not depend on input
+		return x.Span < y.Span
 	})
+	var agents []ev
+	agentOn := s.Agent != AgentOff
 	for _, e := range sorted {
 		i := idx(e.At)
-		if i < 0 || i >= n {
+		if i < 0 || i >= n || (e.Agent && !agentOn) {
 			continue
 		}
 		o := loose
@@ -148,7 +174,11 @@ func For(start time.Time, events []Event, meetings []Meeting, s Settings) Day {
 			}
 			o = k
 		}
-		evs = append(evs, ev{i, o})
+		if e.Agent {
+			agents = append(agents, ev{i, o, idx(e.At.Add(-e.Span))})
+			continue
+		}
+		evs = append(evs, ev{i, o, i})
 	}
 
 	own := make([]int, n)
@@ -188,9 +218,83 @@ func For(start time.Time, events []Event, meetings []Meeting, s Settings) Day {
 		}
 		fill(idx(b.From), idx(b.To), k, false)
 	}
-	if len(evs) > 0 {
-		first, last := evs[0].i, evs[len(evs)-1].i
-		for i := first; i < last; i++ {
+	agentMin := make([]bool, n)
+	if len(agents) > 0 {
+		lo, hi := 0, n
+		if s.Agent == AgentWorkday {
+			lo, hi = n, 0
+			if len(evs) > 0 {
+				lo, hi = evs[0].i, evs[len(evs)-1].i+s.Tail
+			}
+		}
+		// each ticket's agent activity covers its acts, joined across
+		// silences of at most the idle gap, with the usual tail
+		var groups []int
+		cover := map[int][]bool{}
+		byOwner := map[int][]ev{}
+		for _, a := range agents {
+			if _, ok := byOwner[a.owner]; !ok {
+				groups = append(groups, a.owner)
+			}
+			byOwner[a.owner] = append(byOwner[a.owner], a)
+		}
+		name := func(o int) string {
+			if o == loose {
+				return ""
+			}
+			return keys[o]
+		}
+		sort.Slice(groups, func(a, b int) bool { return name(groups[a]) < name(groups[b]) })
+		for _, g := range groups {
+			acts := byOwner[g]
+			sort.Slice(acts, func(a, b int) bool { return acts[a].from < acts[b].from })
+			c := make([]bool, n)
+			mark := func(from, to int) {
+				for i := max(from, 0); i < min(to, n); i++ {
+					c[i] = true
+				}
+			}
+			end := -1
+			for j, a := range acts { // like a prompt: its span, then the tail
+				mark(a.from, a.i)
+				end = max(end, a.i)
+				if j+1 < len(acts) && acts[j+1].from-end <= s.IdleGap {
+					mark(end, acts[j+1].from)
+				} else {
+					mark(end, end+s.Tail)
+				}
+			}
+			cover[g] = c
+		}
+		// a free minute goes to one of the tickets whose agents cover it,
+		// in turn, so concurrent agents share the time and never add to it
+		active := make([]int, 0, len(groups))
+		for i := max(lo, 0); i < min(hi, n); i++ {
+			if own[i] != none {
+				continue
+			}
+			active = active[:0]
+			for _, g := range groups {
+				if cover[g][i] {
+					active = append(active, g)
+				}
+			}
+			if len(active) > 0 {
+				own[i], agentMin[i] = active[i%len(active)], true
+			}
+		}
+	}
+	if len(evs)+len(agents) > 0 {
+		first, last := n, -1
+		for _, e := range evs {
+			first, last = min(first, e.i), max(last, e.i)
+		}
+		if s.Agent != AgentWorkday { // in workday mode the day's span is the user's
+			for _, a := range agents {
+				first, last = min(first, a.from), max(last, a.i)
+			}
+		}
+		for i := max(first, 0); i < min(last, n); i++ {
 			if own[i] == none {
 				own[i] = gap
 			}
@@ -198,7 +302,7 @@ func For(start time.Time, events []Event, meetings []Meeting, s Settings) Day {
 	}
 
 	// keep only the day, and drop silences too short to be gaps
-	own = own[pad : n-pad]
+	own, agentMin = own[pad:n-pad], agentMin[pad:n-pad]
 	for i := 0; i < len(own); {
 		j := i
 		for j < len(own) && own[j] == own[i] {
@@ -218,6 +322,11 @@ func For(start time.Time, events []Event, meetings []Meeting, s Settings) Day {
 			day.Events++
 		}
 	}
+	for _, a := range agents {
+		if a.i >= pad && a.i < n-pad {
+			day.AgentEvents++
+		}
+	}
 	at := func(i int) time.Time { return start.Add(time.Duration(i) * time.Minute) }
 	totals := make([]Total, len(keys))
 	for i, o := range own {
@@ -227,6 +336,9 @@ func For(start time.Time, events []Event, meetings []Meeting, s Settings) Day {
 				totals[o].First = at(i)
 			}
 			totals[o].Minutes++
+			if agentMin[i] {
+				totals[o].Agent++
+			}
 		case o == loose:
 			day.Unassigned.Ticketless++
 		case o == gap:
@@ -245,11 +357,11 @@ func For(start time.Time, events []Event, meetings []Meeting, s Settings) Day {
 
 	for i := 0; i < len(own); {
 		j := i
-		for j < len(own) && own[j] == own[i] {
+		for j < len(own) && own[j] == own[i] && agentMin[j] == agentMin[i] {
 			j++
 		}
 		if o := own[i]; o != none {
-			r := Run{From: at(i), To: at(j), Kind: Work}
+			r := Run{From: at(i), To: at(j), Kind: Work, Agent: agentMin[i]}
 			switch {
 			case o >= 0:
 				r.Ticket = keys[o]
@@ -275,11 +387,19 @@ func For(start time.Time, events []Event, meetings []Meeting, s Settings) Day {
 			switch {
 			case isWork(o):
 				st.Kind, st.Tickets = Work, map[string]int{}
-				for _, x := range own[i:j] {
+				for k, x := range own[i:j] {
+					t := ""
 					if x >= 0 {
-						st.Tickets[keys[x]]++
+						t = keys[x]
+						st.Tickets[t]++
 					} else {
 						st.Unassigned++
+					}
+					if agentMin[i+k] {
+						if st.Agent == nil {
+							st.Agent = map[string]int{}
+						}
+						st.Agent[t]++
 					}
 				}
 			case isMeeting(o):
@@ -290,6 +410,11 @@ func For(start time.Time, events []Event, meetings []Meeting, s Settings) Day {
 			for _, e := range evs {
 				if e.i-pad >= i && e.i-pad < j {
 					st.Events++
+				}
+			}
+			for _, a := range agents {
+				if a.i-pad >= i && a.i-pad < j {
+					st.AgentEvents++
 				}
 			}
 			day.Stretches = append(day.Stretches, st)

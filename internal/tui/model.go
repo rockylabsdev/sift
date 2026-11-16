@@ -53,6 +53,7 @@ type Model struct {
 	tickets []string // lane order: the draft's tickets, by first counted minute
 	effT    []string // per minute of the day: the ticket credited, after decisions
 	effK    []derive.Kind
+	effA    []bool // per minute: counted from agent activity
 	cur     int
 	inspect int // 0 closed; 1 the stretch in context; 2 also every event
 	theme   int
@@ -88,7 +89,7 @@ func (m *Model) recompute() {
 		m.tickets = append(m.tickets, w.Ticket)
 	}
 	n := m.dayLen()
-	m.effT, m.effK = make([]string, n), make([]derive.Kind, n)
+	m.effT, m.effK, m.effA = make([]string, n), make([]derive.Kind, n), make([]bool, n)
 	assigned := func(at time.Time) string {
 		for _, s := range m.in.Day.Stretches {
 			if !at.Before(s.From) && at.Before(s.To) {
@@ -103,7 +104,7 @@ func (m *Model) recompute() {
 			t = assigned(r.From)
 		}
 		for i := m.minute(r.From); i < m.minute(r.To); i++ {
-			m.effT[i], m.effK[i] = t, r.Kind
+			m.effT[i], m.effK[i], m.effA[i] = t, r.Kind, r.Agent
 		}
 	}
 }

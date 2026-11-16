@@ -108,7 +108,11 @@ func randomDay(r *rand.Rand, start time.Time) ([]Event, []Meeting) {
 	keys := []string{"", "A", "B", "C", "D"}
 	ev := make([]Event, r.Intn(300))
 	for i := range ev {
-		ev[i] = Event{start.Add(time.Duration(r.Intn(26*60)-60) * time.Minute), keys[r.Intn(len(keys))]}
+		ev[i] = Event{At: start.Add(time.Duration(r.Intn(26*60)-60) * time.Minute), Ticket: keys[r.Intn(len(keys))]}
+	}
+	for i := r.Intn(200); i > 0; i-- { // agent activity, some of it long tool runs
+		ev = append(ev, Event{At: start.Add(time.Duration(r.Intn(26*60)-60) * time.Minute), Ticket: keys[r.Intn(len(keys))],
+			Agent: true, Span: time.Duration(r.Intn(3)*r.Intn(40)) * time.Minute})
 	}
 	ms := make([]Meeting, r.Intn(4))
 	for i := range ms {
@@ -132,7 +136,8 @@ func TestInvariants(t *testing.T) {
 	for n := 0; n < 3000; n++ {
 		start := starts[n%len(starts)]
 		events, meetings := randomDay(r, start)
-		s := Settings{IdleGap: 1 + r.Intn(30), Tail: r.Intn(10), EventsWin: r.Intn(2) == 0}
+		s := Settings{IdleGap: 1 + r.Intn(30), Tail: r.Intn(10), EventsWin: r.Intn(2) == 0,
+			Agent: []AgentMode{AgentFill, AgentWorkday, AgentOff}[r.Intn(3)]}
 		for b := r.Intn(3); b > 0; b-- {
 			from := start.Add(time.Duration(r.Intn(24*60)) * time.Minute)
 			s.Blocks = append(s.Blocks, Block{from, from.Add(time.Duration(r.Intn(180)) * time.Minute), "B"})
@@ -194,5 +199,66 @@ func TestInvariants(t *testing.T) {
 		if again := For(start, shuffled, meetings, s); !reflect.DeepEqual(totals(again), totals(d)) || again.Unassigned != d.Unassigned {
 			t.Fatalf("day %d: shuffling the events changed the day", n)
 		}
+	}
+}
+
+func ag(t time.Time, k string, span time.Duration) Event {
+	return Event{At: t, Ticket: k, Agent: true, Span: span}
+}
+
+func agentTotals(d Day) map[string]int {
+	out := map[string]int{}
+	for _, t := range d.Totals {
+		if t.Agent > 0 {
+			out[t.Ticket] = t.Agent
+		}
+	}
+	return out
+}
+
+func TestAgentTime(t *testing.T) {
+	cases := []struct {
+		name   string
+		events []Event
+		mode   AgentMode
+		want   map[string]int // minutes per ticket
+		agent  map[string]int // of which from agents
+		gaps   int
+	}{
+		{"agents fill the silence after your prompt",
+			[]Event{ev(hm(9, 0), "A"), ag(hm(9, 30), "A", 0), ag(hm(9, 38), "A", 0), ag(hm(9, 46), "A", 0)}, AgentFill,
+			map[string]int{"A": 26}, map[string]int{"A": 21}, 25},
+		{"a long tool run counts for its whole length",
+			[]Event{ev(hm(9, 0), "A"), ag(hm(10, 0), "A", 50*time.Minute)}, AgentFill,
+			map[string]int{"A": 60}, map[string]int{"A": 55}, 0},
+		{"your prompt beats an agent on another ticket",
+			[]Event{ev(hm(9, 0), "A"), ev(hm(9, 8), "A"), ag(hm(9, 5), "B", 0)}, AgentFill,
+			map[string]int{"A": 13}, map[string]int{}, 0},
+		{"agents on two tickets at once share the time",
+			[]Event{ag(hm(9, 0), "A", 60*time.Minute), ag(hm(9, 0), "B", 60*time.Minute)}, AgentFill,
+			map[string]int{"A": 32, "B": 33}, map[string]int{"A": 32, "B": 33}, 0}, // 65 shared minutes, by turns
+		{"workday counts only between your first and last evidence",
+			[]Event{ev(hm(9, 0), "A"), ev(hm(10, 0), "A"), ag(hm(9, 40), "A", 20*time.Minute), ag(hm(13, 0), "A", 60*time.Minute)}, AgentWorkday,
+			map[string]int{"A": 35}, map[string]int{"A": 25}, 30},
+		{"off ignores agents",
+			[]Event{ev(hm(9, 0), "A"), ag(hm(9, 40), "A", 20*time.Minute)}, AgentOff,
+			map[string]int{"A": 5}, map[string]int{}, 0},
+		{"an agent with no ticket is unassigned time",
+			[]Event{ag(hm(9, 10), "", 10*time.Minute)}, AgentFill,
+			map[string]int{}, map[string]int{}, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := For(day0, c.events, nil, Settings{IdleGap: 10, Tail: 5, Agent: c.mode})
+			if got := totals(d); !reflect.DeepEqual(got, c.want) {
+				t.Errorf("totals %v, want %v", got, c.want)
+			}
+			if got := agentTotals(d); !reflect.DeepEqual(got, c.agent) {
+				t.Errorf("agent minutes %v, want %v", got, c.agent)
+			}
+			if d.Unassigned.Gaps != c.gaps {
+				t.Errorf("gaps %d, want %d", d.Unassigned.Gaps, c.gaps)
+			}
+		})
 	}
 }

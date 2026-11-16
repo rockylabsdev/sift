@@ -219,7 +219,8 @@ type Config struct {
 		Site  string `json:"site,omitempty"`
 		Email string `json:"email,omitempty"`
 	} `json:"jira,omitempty"`
-	Email string `json:"email,omitempty"` // yours, to tell your calendar invitations apart
+	Email     string `json:"email,omitempty"`      // yours, to tell your calendar invitations apart
+	AgentTime string `json:"agent_time,omitempty"` // "fill" (default), "workday" or "off"
 }
 
 func (r *run) config() (Config, error) {
@@ -247,6 +248,11 @@ func (r *run) config() (Config, error) {
 		c.IdleGap = derive.Defaults.IdleGap
 	case c.IdleGap < 1 || c.IdleGap > 120:
 		return c, fmt.Errorf("%s: idle_gap_minutes must be 1 to 120, not %d", path, c.IdleGap)
+	}
+	switch derive.AgentMode(c.AgentTime) {
+	case "", derive.AgentFill, derive.AgentWorkday, derive.AgentOff:
+	default:
+		return c, fmt.Errorf("%s: agent_time must be fill, workday or off, not %q", path, c.AgentTime)
 	}
 	if c.Round != 0 && c.Round != 5 && c.Round != 15 {
 		return c, fmt.Errorf("%s: round_minutes must be 0, 5 or 15, not %d", path, c.Round)

@@ -13,7 +13,7 @@ claude plugin install sift@sift
 
 The plugin is pinned to the release of the binary, so update both together: `brew upgrade sift`, then `claude plugin update sift@sift`. Without Homebrew, `go install github.com/rockylabsdev/sift/cmd/sift@latest` works too.
 
-Each prompt you type in Claude Code is now an event for the ticket its directory names: a `.sift` file (first line, e.g. `PUN-142`), else the branch name. An agent's own activity is never counted.
+Each prompt you type in Claude Code is now an event for the ticket its directory names: a `.sift` file (first line, e.g. `PUN-142`), else the branch name.
 
 Try it before any of that with `sift demo`, which opens the review on a seeded fake day and keeps nothing.
 
@@ -56,7 +56,9 @@ sift import punchcard                                            # keep punchcar
 
 Secrets go to the macOS Keychain, else a 0600 file under `~/.config/sift/secrets`. Meetings leave out all-day events, declined and cancelled invitations, events marked free, and events with no one else invited; `sift draft` lists what it left out and why.
 
-Settings live in `~/.config/sift/config.json`: `idle_gap_minutes` (default 10), `round_minutes` (0, 5 or 15), `events_beat_meetings`, `projects` (the branch rule takes only these projects' keys) and `theme`. The event format is a public contract, described in [docs/evidence.md](docs/evidence.md).
+Settings live in `~/.config/sift/config.json`: `idle_gap_minutes` (default 10), `round_minutes` (0, 5 or 15), `events_beat_meetings`, `projects` (the branch rule takes only these projects' keys), `agent_time` (`fill`, `workday` or `off`) and `theme`.
+
+Agents count too. While subagents or a long agent run work through a spec and you are not prompting, their activity fills that otherwise silent time, credited to the ticket of the session that started them, even in worktrees whose branches name no ticket. Your own prompts always come first, and agents running at once share the time rather than adding to it. The review draws agent time as `┅`. The event format is a public contract, described in [docs/evidence.md](docs/evidence.md).
 
 The design prototype the review grew from is still in `cmd/prototype-daystrip`.
 
