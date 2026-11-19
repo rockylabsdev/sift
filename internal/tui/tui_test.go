@@ -27,6 +27,7 @@ type fake struct {
 	meetings []derive.Meeting
 	dec      map[string]draft.Decisions
 	sent     map[string]Status
+	now      time.Time
 }
 
 func key(s string) *string { return &s }
@@ -73,7 +74,7 @@ func (f *fake) Load(day time.Time) (Input, error) {
 	}
 	d := f.dec[day.Format("2006-01-02")]
 	return Input{Start: day, Events: mine, Day: derive.For(day, in, ms, derive.Defaults), Decisions: d,
-		IdleGap: 10, Meetings: "calendar: test", Today: day0.AddDate(0, 0, 2), Tracker: "Jira", Sent: f.sent}, nil
+		IdleGap: 10, Meetings: "calendar: test", Today: day0.AddDate(0, 0, 2), Tracker: "Jira", Sent: f.sent, Now: f.now}, nil
 }
 
 func (f *fake) Update(day time.Time, change func(*draft.Decisions) error) error {
@@ -301,5 +302,66 @@ func TestAgentsBridgingASilenceIsNotAWarning(t *testing.T) {
 	}
 	if !strings.Contains(fr, "1 subagent worked while you were not prompting") {
 		t.Fatalf("the agent line is missing:\n%s", fr)
+	}
+}
+
+func refreshed(m Model) Model {
+	next, cmd := m.Update(tick{})
+	if cmd == nil {
+		panic("a refresh must schedule the next one")
+	}
+	return next.(Model)
+}
+
+func (f *fake) prompts(h, from, to int, t string) {
+	for m := from; m < to; m += 3 {
+		f.events = append(f.events, evidence.Event{At: hm(h, m), Origin: evidence.Prompt, Kind: "prompt",
+			Ticket: key(t), Found: &evidence.Found{Via: "branch", Value: "feature/" + t}})
+	}
+}
+
+func TestARefreshShowsNewPrompts(t *testing.T) {
+	f := newFake()
+	m := sized(New(f, day0, ""), 120, 36)
+	if strings.Contains(frame(m), "NEW-9") {
+		t.Fatalf("NEW-9 before any prompt for it")
+	}
+	f.prompts(14, 0, 30, "NEW-9")
+	if fr := frame(refreshed(m)); !strings.Contains(fr, "NEW-9") || !strings.Contains(fr, "3 tickets") {
+		t.Fatalf("the refreshed screen does not show NEW-9:\n%s", fr)
+	}
+}
+
+func TestARefreshWaitsForTheConfirmQuestion(t *testing.T) {
+	f := newFake()
+	m := sized(press(New(f, day0, ""), "c"), 120, 36)
+	f.prompts(14, 0, 30, "NEW-9")
+	m = refreshed(m)
+	if fr := frame(m); !strings.Contains(fr, "Confirm Tue 10 Nov: 2 worklogs, 1h 40m to Jira?") {
+		t.Fatalf("the totals under the question changed:\n%s", fr)
+	}
+	if fr := frame(refreshed(press(m, "n"))); !strings.Contains(fr, "NEW-9") {
+		t.Fatalf("after the answer a refresh still shows the old day:\n%s", fr)
+	}
+}
+
+func TestALiveDayMarksNow(t *testing.T) {
+	for _, empty := range []bool{false, true} {
+		f := newFake()
+		if empty {
+			f.events, f.meetings = nil, nil
+		}
+		if fr := frame(sized(New(f, day0, ""), 120, 36)); strings.Contains(fr, "▼") || strings.Contains(fr, "live") {
+			t.Fatalf("a day loaded without a clock is marked live:\n%s", fr)
+		}
+		f.now = hm(20, 30)
+		fr := frame(sized(New(f, day0, ""), 120, 36))
+		if !strings.Contains(fr, "▼") || !strings.Contains(strings.SplitN(fr, "\n", 2)[0], "live") {
+			t.Fatalf("a live day has no now marker or live label:\n%s", fr)
+		}
+		f.now = day0.AddDate(0, 0, 1).Add(time.Hour)
+		if fr := frame(sized(New(f, day0, ""), 120, 36)); strings.Contains(fr, "▼") || strings.Contains(fr, "live") {
+			t.Fatalf("a day the clock has passed is marked live:\n%s", fr)
+		}
 	}
 }

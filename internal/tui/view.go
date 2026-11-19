@@ -25,14 +25,18 @@ func (m Model) hue(t string) rgb {
 }
 
 // span is the hours the day box draws: from the hour of the first stretch
-// to the hour after the last, at least eight hours.
+// to the hour after the last, and on a live day through the current hour,
+// at least eight hours.
 func (m Model) span() (from, to int) {
-	s := m.stretches()
-	if len(s) == 0 {
-		return 8 * 60, 18 * 60
+	from, to = 8*60, 18*60
+	if s := m.stretches(); len(s) > 0 {
+		from = m.minute(s[0].From) / 60 * 60
+		to = (m.minute(s[len(s)-1].To) + 59) / 60 * 60
 	}
-	from = m.minute(s[0].From) / 60 * 60
-	to = (m.minute(s[len(s)-1].To) + 59) / 60 * 60
+	if m.live() {
+		h := m.minute(m.in.Now) / 60 * 60
+		from, to = min(from, h), min(max(to, h+60), m.dayLen())
+	}
 	for to-from < 8*60 {
 		if to < m.dayLen() {
 			to += 60
@@ -108,7 +112,11 @@ func (m Model) dayBox(w int) []string {
 			copy(axis[c:], []rune(m.in.Day.Start.Add(time.Duration(h)*time.Minute).Format("15")))
 		}
 	}
-	out = append(out, strings.Repeat(" ", labelW)+fg(th.dim, string(axis)))
+	row := fg(th.dim, string(axis))
+	if c := (m.minute(m.in.Now) - from) * g / (to - from); m.live() && c >= 0 && c < g {
+		row = fg(th.dim, string(axis[:c])) + fg(th.focus, "▼") + fg(th.dim, string(axis[c+1:]))
+	}
+	out = append(out, strings.Repeat(" ", labelW)+row)
 
 	if len(m.stretches()) == 0 {
 		return append(out, "", " "+fg(th.muted, "No evidence on "+m.in.Start.Format("Mon 2 Jan")+"."),
@@ -773,6 +781,9 @@ func (m Model) header() string {
 	day := fg(th.text, m.in.Start.Format("Mon 2 Jan"))
 	if a := m.ago(); a != "" {
 		day += fg(th.muted, " · "+a)
+	}
+	if m.live() {
+		day += fg(th.muted, " · ") + fg(th.focus, "live")
 	}
 	badge := fg(th.dim, "draft")
 	right := fmt.Sprintf("%s · %s to send ", plural(len(m.dr.Sendable()), "ticket"), dur(m.dr.Total))

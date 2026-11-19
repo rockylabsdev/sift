@@ -30,7 +30,7 @@ func (s source) Load(day time.Time) (tui.Input, error) {
 	now := s.r.Now()
 	in := tui.Input{Start: l.Start, Events: l.Events, Day: l.Day, Decisions: l.Decisions,
 		Round: l.Config.Round, IdleGap: l.Config.IdleGap, Meetings: s.note(l),
-		Today: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()), Tracker: s.Tracker()}
+		Today: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()), Tracker: s.Tracker(), Now: now}
 	if l.Decisions.Confirmed != nil {
 		if store, err := s.r.worklogs(); err == nil {
 			key := l.Start.Format("2006-01-02")
