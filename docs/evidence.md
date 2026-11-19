@@ -54,4 +54,5 @@ An agent event's ticket is, in order:
 - A silence of at least the idle gap, between the day's first and last event, is a gap. Gaps are not counted unless you assign them.
 - Agent activity fills only minutes that your prompts, meetings and blocks leave unclaimed, by the same joining rules: a tool call covers its whole run, and a tail follows the last act. Where agents on several tickets run at once, those minutes are shared between the tickets in turn, so a day still never counts more than its hours. `agent_time` in the config chooses `fill` (the default), `workday` (only between your first and last prompt) or `off`.
 - A day is the local calendar day. A stretch that crosses midnight is split there. Counted time never exceeds the hours in the day.
+- Nothing after now counts. On today, a meeting that has not started is not counted, one in progress counts up to now, and a stretch's tail stops at now.
 - The same events always derive the same day.

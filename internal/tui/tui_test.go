@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"errors"
 	"flag"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -23,10 +26,13 @@ func hm(h, m int) time.Time { return day0.Add(time.Duration(h*60+m) * time.Minut
 
 // fake is a Source over one fixed day and an in-memory decisions store.
 type fake struct {
-	events   []evidence.Event
-	meetings []derive.Meeting
-	dec      map[string]draft.Decisions
-	sent     map[string]Status
+	events    []evidence.Event
+	meetings  []derive.Meeting
+	dec       map[string]draft.Decisions
+	sent      map[string]Status
+	now       time.Time
+	refreshes int
+	fail      error
 }
 
 func key(s string) *string { return &s }
@@ -55,6 +61,9 @@ func newFake() *fake {
 }
 
 func (f *fake) Load(day time.Time) (Input, error) {
+	if f.fail != nil {
+		return Input{}, f.fail
+	}
 	var in []derive.Event
 	var mine []evidence.Event
 	for _, e := range f.events {
@@ -72,8 +81,10 @@ func (f *fake) Load(day time.Time) (Input, error) {
 		ms = f.meetings
 	}
 	d := f.dec[day.Format("2006-01-02")]
-	return Input{Start: day, Events: mine, Day: derive.For(day, in, ms, derive.Defaults), Decisions: d,
-		IdleGap: 10, Meetings: "calendar: test", Today: day0.AddDate(0, 0, 2), Tracker: "Jira", Sent: f.sent}, nil
+	set := derive.Defaults
+	set.Until = f.now
+	return Input{Start: day, Events: mine, Day: derive.For(day, in, ms, set), Decisions: d,
+		IdleGap: 10, Meetings: "calendar: test", Today: day0.AddDate(0, 0, 2), Tracker: "Jira", Sent: f.sent, Now: f.now}, nil
 }
 
 func (f *fake) Update(day time.Time, change func(*draft.Decisions) error) error {
@@ -90,6 +101,8 @@ func (f *fake) Update(day time.Time, change func(*draft.Decisions) error) error 
 }
 
 func (f *fake) Tracker() string { return "Jira" }
+
+func (f *fake) Refresh(time.Time) { f.refreshes++ }
 
 func (f *fake) Confirm(day time.Time) (string, error) {
 	in, _ := f.Load(day)
@@ -301,5 +314,158 @@ func TestAgentsBridgingASilenceIsNotAWarning(t *testing.T) {
 	}
 	if !strings.Contains(fr, "1 subagent worked while you were not prompting") {
 		t.Fatalf("the agent line is missing:\n%s", fr)
+	}
+}
+
+func ticked(m Model) Model {
+	m1, cmd := m.Update(tick{})
+	if cmd == nil {
+		panic("a tick must start a refresh")
+	}
+	m2, cmd := m1.Update(cmd())
+	if cmd == nil {
+		panic("a refresh must schedule the next one")
+	}
+	return m2.(Model)
+}
+
+func (f *fake) prompts(h, from, to int, t string) {
+	for m := from; m < to; m += 3 {
+		f.events = append(f.events, evidence.Event{At: hm(h, m), Origin: evidence.Prompt, Kind: "prompt",
+			Ticket: key(t), Found: &evidence.Found{Via: "branch", Value: "feature/" + t}})
+	}
+}
+
+func TestARefreshShowsNewPrompts(t *testing.T) {
+	f := newFake()
+	m := sized(New(f, day0, ""), 120, 36)
+	if strings.Contains(frame(m), "NEW-9") {
+		t.Fatalf("NEW-9 before any prompt for it")
+	}
+	f.prompts(14, 0, 30, "NEW-9")
+	if fr := frame(ticked(m)); !strings.Contains(fr, "NEW-9") || !strings.Contains(fr, "3 tickets") {
+		t.Fatalf("the refreshed screen does not show NEW-9:\n%s", fr)
+	}
+}
+
+func TestATickRefreshesTheSourceThenReloads(t *testing.T) {
+	f := newFake()
+	m := sized(New(f, day0, ""), 120, 36)
+	m1, cmd := m.Update(tick{})
+	f.prompts(14, 0, 30, "NEW-9")
+	if f.refreshes != 0 || strings.Contains(frame(m1.(Model)), "NEW-9") {
+		t.Fatalf("a tick refreshed or reloaded on the UI goroutine")
+	}
+	msg := cmd()
+	if _, ok := msg.(refreshed); !ok || f.refreshes != 1 {
+		t.Fatalf("the tick's command gave %T after %d refreshes; want refreshed after 1", msg, f.refreshes)
+	}
+	m2, next := m1.Update(msg)
+	if !strings.Contains(frame(m2.(Model)), "NEW-9") || next == nil || f.refreshes != 1 {
+		t.Fatalf("handling refreshed must reload and schedule the next tick, without refreshing again")
+	}
+}
+
+func TestARefreshWaitsForTheConfirmQuestion(t *testing.T) {
+	f := newFake()
+	m := sized(press(New(f, day0, ""), "c"), 120, 36)
+	f.prompts(14, 0, 30, "NEW-9")
+	m = ticked(m)
+	if fr := frame(m); !strings.Contains(fr, "Confirm Tue 10 Nov: 2 worklogs, 1h 40m to Jira?") {
+		t.Fatalf("the totals under the question changed:\n%s", fr)
+	}
+	if fr := frame(ticked(press(m, "n"))); !strings.Contains(fr, "NEW-9") {
+		t.Fatalf("after the answer a refresh still shows the old day:\n%s", fr)
+	}
+}
+
+func TestALiveDayMarksNow(t *testing.T) {
+	for _, empty := range []bool{false, true} {
+		f := newFake()
+		if empty {
+			f.events, f.meetings = nil, nil
+		}
+		if fr := frame(sized(New(f, day0, ""), 120, 36)); strings.Contains(fr, "live") {
+			t.Fatalf("a day loaded without a clock is marked live:\n%s", fr)
+		}
+		f.now = hm(10, 15)
+		fr := frame(sized(New(f, day0, ""), 120, 36))
+		lines := strings.Split(fr, "\n")
+		if !strings.Contains(lines[0], "live · 10:15") || strings.Contains(fr, "▼") {
+			t.Fatalf("a live day's header does not say live · 10:15, or it draws a marker:\n%s", fr)
+		}
+		if !empty {
+			axis := []rune(lines[2])
+			col := func(label string) int {
+				for i := 0; i+1 < len(axis); i++ {
+					if string(axis[i:i+2]) == label {
+						return i
+					}
+				}
+				t.Fatalf("no %s on the axis %q", label, lines[2])
+				return 0
+			}
+			before, after := col("10"), col("11")
+			baselines := 0
+			for _, l := range lines[3:] {
+				if strings.HasPrefix(l, "╰") {
+					break
+				}
+				r := []rune(l)
+				if len(r) <= after || !strings.ContainsRune("─━┅", r[before]) {
+					continue
+				}
+				baselines++
+				if rest := string(r[after : len(r)-1]); strings.ContainsAny(rest, "─━┅") {
+					t.Errorf("a baseline runs past now: %q", l)
+				}
+			}
+			if baselines != 2 {
+				t.Fatalf("%d baselines reach 10:00, want both lanes':\n%s", baselines, fr)
+			}
+		}
+		f.now = day0.AddDate(0, 0, 1).Add(time.Hour)
+		if fr := frame(sized(New(f, day0, ""), 120, 36)); strings.Contains(fr, "live") {
+			t.Fatalf("a day the clock has passed is marked live:\n%s", fr)
+		}
+	}
+}
+
+func TestAFailedReloadSaysSoAndKeepsTheDay(t *testing.T) {
+	last := func(m Model) string {
+		lines := strings.Split(frame(m), "\n")
+		return lines[len(lines)-1]
+	}
+	for _, c := range []struct {
+		now  time.Time
+		err  error
+		want string
+	}{
+		{hm(14, 5), errors.New("the log is unreadable"), "as of 14:05 · could not load: the log is unreadable"},
+		{time.Time{}, errors.New("the log is unreadable"), "could not load: the log is unreadable"},
+		{hm(14, 5), &fs.PathError{Op: "open", Path: "/Users/someone/.local/share/sift/events/2026-11.jsonl", Err: syscall.ENOTDIR},
+			"as of 14:05 · could not load: open 2026-11.jsonl: not a directory"},
+	} {
+		f := newFake()
+		f.now = c.now
+		m := sized(New(f, day0, ""), 120, 36)
+		f.fail = c.err
+		m = ticked(m)
+		if got := last(m); !strings.HasSuffix(got, c.want+" ") || strings.Contains(got, "calendar: test") {
+			t.Fatalf("status line %q, want it to end %q", got, c.want)
+		}
+		if !strings.Contains(m.View().Content, fg(m.theme_().amber, c.want+" ")) {
+			t.Errorf("%q is not amber", c.want)
+		}
+		if fr := frame(m); !strings.Contains(fr, "PUN-142") || !strings.Contains(fr, "OPS-77") {
+			t.Fatalf("the day on screen is gone:\n%s", fr)
+		}
+		if got := last(press(m, "t")); !strings.Contains(got, "Only meetings, gaps and ticketless time") || strings.Contains(got, "could not load") {
+			t.Fatalf("a message does not take the status line over the reload error: %q", got)
+		}
+		f.fail = nil
+		if got := last(ticked(m)); strings.Contains(got, "could not load") || !strings.Contains(got, "calendar: test") {
+			t.Fatalf("after a good reload the status line is %q", got)
+		}
 	}
 }

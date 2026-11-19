@@ -1,7 +1,10 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -25,14 +28,18 @@ func (m Model) hue(t string) rgb {
 }
 
 // span is the hours the day box draws: from the hour of the first stretch
-// to the hour after the last, at least eight hours.
+// to the hour after the last, and on a live day through the current hour,
+// at least eight hours.
 func (m Model) span() (from, to int) {
-	s := m.stretches()
-	if len(s) == 0 {
-		return 8 * 60, 18 * 60
+	from, to = 8*60, 18*60
+	if s := m.stretches(); len(s) > 0 {
+		from = m.minute(s[0].From) / 60 * 60
+		to = (m.minute(s[len(s)-1].To) + 59) / 60 * 60
 	}
-	from = m.minute(s[0].From) / 60 * 60
-	to = (m.minute(s[len(s)-1].To) + 59) / 60 * 60
+	if m.live() {
+		h := m.minute(m.in.Now)
+		from, to = min(from, h/60*60), min(max(to, (h+30+59)/60*60), m.dayLen())
+	}
 	for to-from < 8*60 {
 		if to < m.dayLen() {
 			to += 60
@@ -89,8 +96,17 @@ func (m Model) dayBox(w int) []string {
 	g := w - 2 - labelW - 1
 	col := func(c int) (int, int) { return from + c*(to-from)/g, from + (c+1)*(to-from)/g }
 	sel, hasSel := m.selected()
+	// on a live day the strip ends at now, marked by a tinted column
+	nowCol, nowMin := g, m.dayLen()
+	if m.live() {
+		nowMin = m.minute(m.in.Now)
+		nowCol = (nowMin - from) * g / (to - from)
+	}
 	bgAt := func(c int) *rgb {
 		a, b := col(c)
+		if c == nowCol {
+			return &th.border
+		}
 		if mid := (a + b) / 2; hasSel && mid >= m.minute(sel.From) && mid < m.minute(sel.To) {
 			return &th.sel
 		}
@@ -99,6 +115,7 @@ func (m Model) dayBox(w int) []string {
 
 	var out []string
 	axis := []rune(strings.Repeat(" ", g))
+	later := g // where the hour labels at or after now begin
 	step := 60
 	if (to-from)/60 > 10 {
 		step = 120
@@ -106,9 +123,24 @@ func (m Model) dayBox(w int) []string {
 	for h := from; h < to; h += step {
 		if c := (h - from) * g / (to - from); c+2 <= g {
 			copy(axis[c:], []rune(m.in.Day.Start.Add(time.Duration(h)*time.Minute).Format("15")))
+			if h >= nowMin && later == g {
+				later = c
+			}
 		}
 	}
-	out = append(out, strings.Repeat(" ", labelW)+fg(th.dim, string(axis)))
+	row := fg(th.dim, string(axis))
+	if nowCol < g {
+		var b strings.Builder
+		for c, r := range axis {
+			tone := th.dim
+			if c >= later {
+				tone = th.faint
+			}
+			b.WriteString(on(tone, bgAt(c), string(r)))
+		}
+		row = b.String()
+	}
+	out = append(out, strings.Repeat(" ", labelW)+row)
 
 	if len(m.stretches()) == 0 {
 		return append(out, "", " "+fg(th.muted, "No evidence on "+m.in.Start.Format("Mon 2 Jan")+"."),
@@ -149,11 +181,15 @@ func (m Model) dayBox(w int) []string {
 		}
 	}
 
+	nowLine := ""
+	if nowCol < g {
+		nowLine = strings.Repeat(" ", labelW+nowCol) + on(th.faint, &th.border, " ")
+	}
 	left := []rune{0x40, 0x04, 0x02, 0x01}
 	right := []rune{0x80, 0x20, 0x10, 0x08}
 	for i, t := range m.tickets[:shown] {
 		if i > 0 && sep {
-			out = append(out, "")
+			out = append(out, nowLine)
 		}
 		h := m.hue(t)
 		for r := 0; r < evRows; r++ {
@@ -186,6 +222,10 @@ func (m Model) dayBox(w int) []string {
 		}
 		var b strings.Builder
 		for c := 0; c < g; c++ {
+			if c > nowCol {
+				b.WriteString(on(th.faint, bgAt(c), " "))
+				continue
+			}
 			a, z := col(c)
 			own, agent := 0, 0
 			for mm := a; mm < z && mm < len(m.effT); mm++ {
@@ -257,6 +297,9 @@ func (m Model) dayBox(w int) []string {
 				other[c0+j] = on(tone, bgAt(c0+j), string(r))
 			}
 		}
+	}
+	for c := nowCol + 1; c < g; c++ {
+		other[c] = on(th.faint, bgAt(c), " ")
 	}
 	out = append(out, pad(" "+fg(th.dim, "other"), labelW)+strings.Join(other, ""))
 
@@ -774,6 +817,9 @@ func (m Model) header() string {
 	if a := m.ago(); a != "" {
 		day += fg(th.muted, " · "+a)
 	}
+	if m.live() {
+		day += fg(th.muted, " · ") + fg(th.focus, "live · "+m.clockT(m.in.Now))
+	}
 	badge := fg(th.dim, "draft")
 	right := fmt.Sprintf("%s · %s to send ", plural(len(m.dr.Sendable()), "ticket"), dur(m.dr.Total))
 	switch {
@@ -839,8 +885,15 @@ func (m Model) View() tea.View {
 		}
 		key := func(k, what string) string { return fg(th.text, k) + fg(th.dim, " "+what+"   ") }
 		status := fg(th.faint, m.in.Meetings+" ")
-		if m.msg != "" {
+		switch {
+		case m.msg != "":
 			status = fg(th.amber, m.msg+" ")
+		case m.err != nil:
+			status = "could not load: " + strings.TrimSuffix(brief(m.err), ".")
+			if !m.in.Now.IsZero() {
+				status = "as of " + m.clockT(m.in.Now) + " · " + status
+			}
+			status = fg(th.amber, status+" ")
 		}
 		keys := " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("+ −", "adjust") + key("c", "confirm") + key("[ ]", "day") + key("T", th.Name) + key("q", "quit")
 		if m.dr.Confirmed {
@@ -849,7 +902,7 @@ func (m Model) View() tea.View {
 		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && !m.dr.Confirmed {
 			keys = " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("+−", "adjust") + key("c", "confirm") + key("[]", "day") + key("q", "quit")
 		}
-		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && m.msg == "" {
+		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && m.msg == "" && m.err == nil {
 			status = ""
 		}
 		if m.asking {
@@ -864,4 +917,14 @@ func (m Model) View() tea.View {
 	v.BackgroundColor = lipgloss.Color(th.bg.String())
 	v.ForegroundColor = lipgloss.Color(th.text.String())
 	return v
+}
+
+// brief names a failed file by its base name: the full path would push
+// the rest of the status line off the screen.
+func brief(err error) string {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Op + " " + filepath.Base(pe.Path) + ": " + pe.Err.Error()
+	}
+	return err.Error()
 }

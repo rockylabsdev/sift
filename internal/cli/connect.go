@@ -55,19 +55,63 @@ func (r *run) client(cfg Config) (c tracker.Client, none bool, err error) {
 	return jira.New(cfg.Jira.Site, cfg.Jira.Email, token, nil), false, nil
 }
 
+// calendarEvery is how often the review refetches today's calendar, so a
+// meeting added after it opened still appears.
+const calendarEvery = 5 * time.Minute
+
+// fetched is a day's calendar and when sift last tried to fetch it.
+type fetched struct {
+	day calendar.Day
+	at  time.Time
+}
+
 // meetings reads the calendar for day, when one is connected: once per
 // day per run, since the review reloads the day after every change.
+// The review's Refresh keeps today's current.
 func (r *run) meetings(cfg Config, start time.Time) calendar.Day {
 	k := start.Format("2006-01-02")
-	if d, ok := r.calendars[k]; ok {
-		return d
+	r.calMu.Lock()
+	f, ok := r.calendars[k]
+	r.calMu.Unlock()
+	if ok {
+		return f.day
 	}
-	d := r.fetchMeetings(cfg, start)
-	if r.calendars == nil {
-		r.calendars = map[string]calendar.Day{}
-	}
-	r.calendars[k] = d
+	at := r.Now()
+	d := r.fetch(cfg, start)
+	r.storeCalendar(k, at, d)
 	return d
+}
+
+// Refresh refetches day's calendar when the day is today, a calendar is
+// in use, and it was last tried calendarEvery ago or more. It runs off the
+// review's UI goroutine and never holds the lock while it fetches.
+func (s source) Refresh(day time.Time) {
+	r := s.r
+	now := r.Now()
+	if !r.withCalendar || r.demoMeetings != nil || !inDay(day, now) {
+		return
+	}
+	k := day.Format("2006-01-02")
+	r.calMu.Lock()
+	f, ok := r.calendars[k]
+	r.calMu.Unlock()
+	if !ok || now.Sub(f.at) < calendarEvery {
+		return
+	}
+	cfg, err := r.config()
+	if err != nil {
+		return
+	}
+	r.storeCalendar(k, now, r.fetch(cfg, day))
+}
+
+func (r *run) storeCalendar(k string, at time.Time, d calendar.Day) {
+	r.calMu.Lock()
+	defer r.calMu.Unlock()
+	if r.calendars == nil {
+		r.calendars = map[string]fetched{}
+	}
+	r.calendars[k] = fetched{d, at}
 }
 
 func (r *run) fetchMeetings(cfg Config, start time.Time) calendar.Day {

@@ -11,6 +11,7 @@ import (
 
 func (h *harness) hook(hh, mm, ss int, in map[string]any) {
 	h.t.Helper()
+	defer func(now time.Time) { h.now = now }(h.now)
 	h.now = time.Date(2026, 11, 10, hh, mm, ss, 0, time.Local)
 	b, _ := json.Marshal(in)
 	if code, out, errOut := h.run(string(b), "record", "--hook"); code != 0 || out != "" || errOut != "" {

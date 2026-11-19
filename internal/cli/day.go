@@ -143,7 +143,7 @@ func (r *run) load(date string) (Loaded, error) {
 	if err != nil {
 		return l, err
 	}
-	set := derive.Settings{IdleGap: cfg.IdleGap, Tail: derive.Defaults.Tail, EventsWin: cfg.EventsWin, Agent: derive.AgentMode(cfg.AgentTime)}
+	set := derive.Settings{IdleGap: cfg.IdleGap, Tail: derive.Defaults.Tail, EventsWin: cfg.EventsWin, Agent: derive.AgentMode(cfg.AgentTime), Until: r.Now()}
 	for _, b := range l.Decisions.Blocks {
 		set.Blocks = append(set.Blocks, derive.Block{From: b.From, To: b.To, Ticket: b.Ticket})
 	}

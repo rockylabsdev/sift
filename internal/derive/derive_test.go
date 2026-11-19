@@ -262,3 +262,42 @@ func TestAgentTime(t *testing.T) {
 		})
 	}
 }
+
+func TestNothingCountsAfterUntil(t *testing.T) {
+	events := []Event{ev(hm(9, 0), "A"), ev(hm(9, 6), "A")}
+	meetings := []Meeting{{hm(9, 30), hm(10, 0), "standup"}, {hm(14, 0), hm(15, 0), "review"}}
+	cases := []struct {
+		name     string
+		until    time.Time
+		want     map[string]int
+		meetings int
+		last     time.Time
+	}{
+		{"a future meeting does not count", hm(12, 0), map[string]int{"A": 11}, 30, hm(10, 0)},
+		{"a meeting in progress counts through until's minute", hm(9, 45), map[string]int{"A": 11}, 16, hm(9, 46)},
+		{"a tail is cut after until's minute", hm(9, 8), map[string]int{"A": 9}, 0, hm(9, 9)},
+		{"zero until changes nothing", time.Time{}, map[string]int{"A": 11}, 90, hm(15, 0)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := Defaults
+			s.Until = c.until
+			d := For(day0, events, meetings, s)
+			if got := totals(d); !reflect.DeepEqual(got, c.want) {
+				t.Errorf("totals %v, want %v", got, c.want)
+			}
+			if d.Unassigned.Meetings != c.meetings {
+				t.Errorf("meeting minutes %d, want %d", d.Unassigned.Meetings, c.meetings)
+			}
+			if last := d.Stretches[len(d.Stretches)-1].To; !last.Equal(c.last) {
+				t.Errorf("the last stretch ends %s, want %s", last.Format("15:04"), c.last.Format("15:04"))
+			}
+			if last := d.Runs[len(d.Runs)-1].To; !last.Equal(c.last) {
+				t.Errorf("the last run ends %s, want %s", last.Format("15:04"), c.last.Format("15:04"))
+			}
+		})
+	}
+	if !reflect.DeepEqual(For(day0, events, meetings, Defaults), For(day0, events, meetings, Settings{IdleGap: 10, Tail: 5, Until: day0.AddDate(0, 0, 2)})) {
+		t.Error("an until after the day changes it")
+	}
+}

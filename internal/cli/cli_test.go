@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rockylabsdev/sift/internal/calendar"
 )
 
 type harness struct {
@@ -20,7 +22,7 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	h := &harness{t: t, env: map[string]string{"XDG_DATA_HOME": t.TempDir(), "XDG_CONFIG_HOME": t.TempDir(), "HOME": t.TempDir()}}
-	h.now = time.Date(2026, 11, 10, 9, 0, 0, 0, time.Local)
+	h.now = time.Date(2026, 11, 10, 23, 0, 0, 0, time.Local)
 	h.repo = t.TempDir()
 	out, err := exec.Command("git", "-C", h.repo, "init", "-q", "-b", "feature/PUN-142-side-lock").CombinedOutput()
 	if err != nil {
@@ -43,6 +45,7 @@ func (h *harness) run(stdin string, args ...string) (code int, stdout, stderr st
 // prompt records a prompt the way the plugin's hook does, at h:m.
 func (h *harness) prompt(hh, mm int, dir string) {
 	h.t.Helper()
+	defer func(now time.Time) { h.now = now }(h.now)
 	h.now = time.Date(2026, 11, 10, hh, mm, 0, 0, time.Local)
 	in, _ := json.Marshal(map[string]string{"cwd": dir, "hook_event_name": "UserPromptSubmit"})
 	code, out, errOut := h.run(string(in), "record", "--hook")
@@ -231,5 +234,67 @@ func TestABlockOwnsItsTime(t *testing.T) {
 	}
 	if code, _, _ := h.run("", "block", "OPS-77", "10:00-09:00"); code != 64 {
 		t.Fatalf("a backwards block: exit %d", code)
+	}
+}
+
+func TestTodayCountsNothingAfterNow(t *testing.T) {
+	h := newHarness(t)
+	h.prompt(9, 0, h.repo)
+	h.now = time.Date(2026, 11, 10, 9, 2, 0, 0, time.Local)
+	if _, _, data := h.envelope("draft"); data["total"].(float64) != 3 {
+		t.Fatalf("at 09:02 a 09:00 prompt counts %vm, want 3m, through the minute now is in", data["total"])
+	}
+	h.now = time.Date(2026, 11, 11, 9, 0, 0, 0, time.Local)
+	if _, _, data := h.envelope("draft", "--date", "2026-11-10"); data["total"].(float64) != 5 {
+		t.Fatalf("the next day the prompt counts %vm, want its 5m tail", data["total"])
+	}
+}
+
+func TestTheReviewRefetchesTodaysCalendarEveryFiveMinutes(t *testing.T) {
+	h := newHarness(t)
+	h.now = time.Date(2026, 11, 10, 9, 0, 0, 0, time.Local)
+	today, yesterday := time.Date(2026, 11, 10, 0, 0, 0, 0, time.Local), time.Date(2026, 11, 9, 0, 0, 0, 0, time.Local)
+	fetches := 0
+	r := &run{Env: Env{Getenv: func(k string) string { return h.env[k] }, Now: func() time.Time { return h.now }}, withCalendar: true}
+	r.fetch = func(_ Config, day time.Time) calendar.Day {
+		fetches++
+		d := calendar.Day{Source: calendar.Fetched}
+		for i := 0; i < fetches; i++ {
+			d.Meetings = append(d.Meetings, calendar.Meeting{From: day.Add(time.Duration(8+i) * time.Hour), To: day.Add(time.Duration(8+i)*time.Hour + 30*time.Minute), Title: "sync"})
+		}
+		return d
+	}
+	s := source{r}
+	meetings := func(day time.Time) string {
+		t.Helper()
+		in, err := s.Load(day)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return in.Meetings
+	}
+	if got := meetings(today); fetches != 1 || got != "calendar: 1 meeting" {
+		t.Fatalf("the first load fetched %d times and says %q", fetches, got)
+	}
+	h.now = h.now.Add(4 * time.Minute)
+	s.Refresh(today)
+	if got := meetings(today); fetches != 1 || got != "calendar: 1 meeting" {
+		t.Fatalf("four minutes on, %d fetches and %q; want the first fetch kept", fetches, got)
+	}
+	h.now = h.now.Add(time.Minute)
+	done := make(chan struct{})
+	go func() { s.Refresh(today); close(done) }()
+	for i := 0; i < 3; i++ {
+		meetings(today)
+	}
+	<-done
+	if got := meetings(today); fetches != 2 || got != "calendar: 2 meetings" {
+		t.Fatalf("five minutes on, %d fetches and %q; want a second fetch and its new meeting", fetches, got)
+	}
+	meetings(yesterday)
+	h.now = h.now.Add(time.Hour)
+	s.Refresh(yesterday)
+	if fetches != 3 {
+		t.Fatalf("%d fetches; a past day is fetched once, when it loads, and never refreshed", fetches)
 	}
 }

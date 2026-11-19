@@ -27,6 +27,7 @@ type Input struct {
 	Today     time.Time         // midnight today, to say how far back the day is
 	Tracker   string            // where confirmed worklogs go: "Jira", or "" for the local log
 	Sent      map[string]Status // a confirmed day's worklogs, by ticket, as the outbox has them
+	Now       time.Time         // the clock when the day was loaded; zero means not live
 }
 
 // Status is where one confirmed worklog stands.
@@ -43,7 +44,19 @@ type Source interface {
 	Confirm(day time.Time) (string, error)
 	// Tracker names where confirmed worklogs go ("Jira", or "the local log").
 	Tracker() string
+	// Refresh brings day's slow sources, such as the calendar, up to date.
+	// It runs off the UI goroutine, concurrently with Load.
+	Refresh(day time.Time)
 }
+
+// refresh is how often the screen reloads the day it shows.
+const refresh = 10 * time.Second
+
+type tick struct{}
+
+type refreshed struct{}
+
+func next() tea.Cmd { return tea.Tick(refresh, func(time.Time) tea.Msg { return tick{} }) }
 
 // Model is the review screen's state.
 type Model struct {
@@ -107,6 +120,11 @@ func (m *Model) recompute() {
 			m.effT[i], m.effK[i], m.effA[i] = t, r.Kind, r.Agent
 		}
 	}
+}
+
+// live is whether the clock is inside the day shown, so it is still filling in.
+func (m Model) live() bool {
+	return !m.in.Now.IsZero() && !m.in.Now.Before(m.in.Day.Start) && m.in.Now.Before(m.in.Day.End)
 }
 
 func (m Model) dayLen() int { return int(m.in.Day.End.Sub(m.in.Day.Start) / time.Minute) }
@@ -192,10 +210,18 @@ func (m *Model) change(f func(*draft.Decisions) error) {
 	m.load(m.in.Start)
 }
 
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd { return next() }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch k := msg.(type) {
+	case tick:
+		src, day := m.src, m.in.Start
+		return m, func() tea.Msg { src.Refresh(day); return refreshed{} }
+	case refreshed:
+		if !m.asking {
+			m.load(m.in.Start)
+		}
+		return m, next()
 	case tea.WindowSizeMsg:
 		m.w, m.h = k.Width, k.Height
 	case tea.KeyPressMsg:
