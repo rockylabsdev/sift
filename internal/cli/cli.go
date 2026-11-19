@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/rockylabsdev/sift/internal/calendar"
@@ -67,7 +68,9 @@ type run struct {
 
 	withCalendar bool                                 // fetch meetings when loading a day
 	demoMeetings func(day time.Time) []derive.Meeting // the demo's fixed meetings
-	calendars    map[string]calendar.Day              // fetched this run, by date
+	fetch        func(Config, time.Time) calendar.Day // reads a day's calendar: fetchMeetings, or a test's feed
+	calMu        sync.Mutex                           // the review refreshes calendars off its UI goroutine
+	calendars    map[string]fetched                   // this run's calendar days, by date
 }
 
 type usageError struct{ msg string }
@@ -97,6 +100,7 @@ const usage = `sift: a terminal worklog drafter
 // Run runs sift with args and returns the exit code.
 func Run(args []string, env Env) int {
 	r := &run{Env: env, json: env.Getenv("SIFT_JSON") == "1", withCalendar: true}
+	r.fetch = r.fetchMeetings
 	if len(args) == 0 {
 		args = []string{"review"}
 	}

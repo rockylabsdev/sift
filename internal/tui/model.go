@@ -44,12 +44,17 @@ type Source interface {
 	Confirm(day time.Time) (string, error)
 	// Tracker names where confirmed worklogs go ("Jira", or "the local log").
 	Tracker() string
+	// Refresh brings day's slow sources, such as the calendar, up to date.
+	// It runs off the UI goroutine, concurrently with Load.
+	Refresh(day time.Time)
 }
 
 // refresh is how often the screen reloads the day it shows.
 const refresh = 10 * time.Second
 
 type tick struct{}
+
+type refreshed struct{}
 
 func next() tea.Cmd { return tea.Tick(refresh, func(time.Time) tea.Msg { return tick{} }) }
 
@@ -210,6 +215,9 @@ func (m Model) Init() tea.Cmd { return next() }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch k := msg.(type) {
 	case tick:
+		src, day := m.src, m.in.Start
+		return m, func() tea.Msg { src.Refresh(day); return refreshed{} }
+	case refreshed:
 		if !m.asking {
 			m.load(m.in.Start)
 		}

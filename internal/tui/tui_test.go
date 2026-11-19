@@ -23,11 +23,12 @@ func hm(h, m int) time.Time { return day0.Add(time.Duration(h*60+m) * time.Minut
 
 // fake is a Source over one fixed day and an in-memory decisions store.
 type fake struct {
-	events   []evidence.Event
-	meetings []derive.Meeting
-	dec      map[string]draft.Decisions
-	sent     map[string]Status
-	now      time.Time
+	events    []evidence.Event
+	meetings  []derive.Meeting
+	dec       map[string]draft.Decisions
+	sent      map[string]Status
+	now       time.Time
+	refreshes int
 }
 
 func key(s string) *string { return &s }
@@ -91,6 +92,8 @@ func (f *fake) Update(day time.Time, change func(*draft.Decisions) error) error 
 }
 
 func (f *fake) Tracker() string { return "Jira" }
+
+func (f *fake) Refresh(time.Time) { f.refreshes++ }
 
 func (f *fake) Confirm(day time.Time) (string, error) {
 	in, _ := f.Load(day)
@@ -305,12 +308,16 @@ func TestAgentsBridgingASilenceIsNotAWarning(t *testing.T) {
 	}
 }
 
-func refreshed(m Model) Model {
-	next, cmd := m.Update(tick{})
+func ticked(m Model) Model {
+	m1, cmd := m.Update(tick{})
+	if cmd == nil {
+		panic("a tick must start a refresh")
+	}
+	m2, cmd := m1.Update(cmd())
 	if cmd == nil {
 		panic("a refresh must schedule the next one")
 	}
-	return next.(Model)
+	return m2.(Model)
 }
 
 func (f *fake) prompts(h, from, to int, t string) {
@@ -327,8 +334,26 @@ func TestARefreshShowsNewPrompts(t *testing.T) {
 		t.Fatalf("NEW-9 before any prompt for it")
 	}
 	f.prompts(14, 0, 30, "NEW-9")
-	if fr := frame(refreshed(m)); !strings.Contains(fr, "NEW-9") || !strings.Contains(fr, "3 tickets") {
+	if fr := frame(ticked(m)); !strings.Contains(fr, "NEW-9") || !strings.Contains(fr, "3 tickets") {
 		t.Fatalf("the refreshed screen does not show NEW-9:\n%s", fr)
+	}
+}
+
+func TestATickRefreshesTheSourceThenReloads(t *testing.T) {
+	f := newFake()
+	m := sized(New(f, day0, ""), 120, 36)
+	m1, cmd := m.Update(tick{})
+	f.prompts(14, 0, 30, "NEW-9")
+	if f.refreshes != 0 || strings.Contains(frame(m1.(Model)), "NEW-9") {
+		t.Fatalf("a tick refreshed or reloaded on the UI goroutine")
+	}
+	msg := cmd()
+	if _, ok := msg.(refreshed); !ok || f.refreshes != 1 {
+		t.Fatalf("the tick's command gave %T after %d refreshes; want refreshed after 1", msg, f.refreshes)
+	}
+	m2, next := m1.Update(msg)
+	if !strings.Contains(frame(m2.(Model)), "NEW-9") || next == nil || f.refreshes != 1 {
+		t.Fatalf("handling refreshed must reload and schedule the next tick, without refreshing again")
 	}
 }
 
@@ -336,11 +361,11 @@ func TestARefreshWaitsForTheConfirmQuestion(t *testing.T) {
 	f := newFake()
 	m := sized(press(New(f, day0, ""), "c"), 120, 36)
 	f.prompts(14, 0, 30, "NEW-9")
-	m = refreshed(m)
+	m = ticked(m)
 	if fr := frame(m); !strings.Contains(fr, "Confirm Tue 10 Nov: 2 worklogs, 1h 40m to Jira?") {
 		t.Fatalf("the totals under the question changed:\n%s", fr)
 	}
-	if fr := frame(refreshed(press(m, "n"))); !strings.Contains(fr, "NEW-9") {
+	if fr := frame(ticked(press(m, "n"))); !strings.Contains(fr, "NEW-9") {
 		t.Fatalf("after the answer a refresh still shows the old day:\n%s", fr)
 	}
 }
