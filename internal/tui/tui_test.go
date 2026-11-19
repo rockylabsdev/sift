@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
@@ -29,6 +30,7 @@ type fake struct {
 	sent      map[string]Status
 	now       time.Time
 	refreshes int
+	fail      error
 }
 
 func key(s string) *string { return &s }
@@ -57,6 +59,9 @@ func newFake() *fake {
 }
 
 func (f *fake) Load(day time.Time) (Input, error) {
+	if f.fail != nil {
+		return Input{}, f.fail
+	}
 	var in []derive.Event
 	var mine []evidence.Event
 	for _, e := range f.events {
@@ -387,6 +392,42 @@ func TestALiveDayMarksNow(t *testing.T) {
 		f.now = day0.AddDate(0, 0, 1).Add(time.Hour)
 		if fr := frame(sized(New(f, day0, ""), 120, 36)); strings.Contains(fr, "▼") || strings.Contains(fr, "live") {
 			t.Fatalf("a day the clock has passed is marked live:\n%s", fr)
+		}
+	}
+}
+
+func TestAFailedReloadSaysSoAndKeepsTheDay(t *testing.T) {
+	last := func(m Model) string {
+		lines := strings.Split(frame(m), "\n")
+		return lines[len(lines)-1]
+	}
+	for _, c := range []struct {
+		now  time.Time
+		want string
+	}{
+		{hm(14, 5), "Could not reload: the log is unreadable. Showing 14:05."},
+		{time.Time{}, "Could not reload: the log is unreadable."},
+	} {
+		f := newFake()
+		f.now = c.now
+		m := sized(New(f, day0, ""), 120, 36)
+		f.fail = errors.New("the log is unreadable")
+		m = ticked(m)
+		if got := last(m); !strings.HasSuffix(got, c.want+" ") || strings.Contains(got, "calendar: test") {
+			t.Fatalf("status line %q, want it to end %q", got, c.want)
+		}
+		if !strings.Contains(m.View().Content, fg(m.theme_().amber, c.want+" ")) {
+			t.Errorf("%q is not amber", c.want)
+		}
+		if fr := frame(m); !strings.Contains(fr, "PUN-142") || !strings.Contains(fr, "OPS-77") {
+			t.Fatalf("the day on screen is gone:\n%s", fr)
+		}
+		if got := last(press(m, "t")); !strings.Contains(got, "Only meetings, gaps and ticketless time") || strings.Contains(got, "Could not reload") {
+			t.Fatalf("a message does not take the status line over the reload error: %q", got)
+		}
+		f.fail = nil
+		if got := last(ticked(m)); strings.Contains(got, "Could not reload") || !strings.Contains(got, "calendar: test") {
+			t.Fatalf("after a good reload the status line is %q", got)
 		}
 	}
 }

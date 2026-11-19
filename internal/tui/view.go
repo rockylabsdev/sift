@@ -850,8 +850,15 @@ func (m Model) View() tea.View {
 		}
 		key := func(k, what string) string { return fg(th.text, k) + fg(th.dim, " "+what+"   ") }
 		status := fg(th.faint, m.in.Meetings+" ")
-		if m.msg != "" {
+		switch {
+		case m.msg != "":
 			status = fg(th.amber, m.msg+" ")
+		case m.err != nil:
+			status = "Could not reload: " + strings.TrimSuffix(m.err.Error(), ".") + "."
+			if !m.in.Now.IsZero() {
+				status += " Showing " + m.in.Now.Format("15:04") + "."
+			}
+			status = fg(th.amber, status+" ")
 		}
 		keys := " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("+ −", "adjust") + key("c", "confirm") + key("[ ]", "day") + key("T", th.Name) + key("q", "quit")
 		if m.dr.Confirmed {
@@ -860,7 +867,7 @@ func (m Model) View() tea.View {
 		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && !m.dr.Confirmed {
 			keys = " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("+−", "adjust") + key("c", "confirm") + key("[]", "day") + key("q", "quit")
 		}
-		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && m.msg == "" {
+		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && m.msg == "" && m.err == nil {
 			status = ""
 		}
 		if m.asking {
