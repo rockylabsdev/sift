@@ -1,7 +1,10 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -872,7 +875,7 @@ func (m Model) View() tea.View {
 		case m.msg != "":
 			status = fg(th.amber, m.msg+" ")
 		case m.err != nil:
-			status = "could not load: " + strings.TrimSuffix(m.err.Error(), ".")
+			status = "could not load: " + strings.TrimSuffix(brief(m.err), ".")
 			if !m.in.Now.IsZero() {
 				status = "as of " + m.clockT(m.in.Now) + " · " + status
 			}
@@ -900,4 +903,14 @@ func (m Model) View() tea.View {
 	v.BackgroundColor = lipgloss.Color(th.bg.String())
 	v.ForegroundColor = lipgloss.Color(th.text.String())
 	return v
+}
+
+// brief names a failed file by its base name: the full path would push
+// the rest of the status line off the screen.
+func brief(err error) string {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Op + " " + filepath.Base(pe.Path) + ": " + pe.Err.Error()
+	}
+	return err.Error()
 }

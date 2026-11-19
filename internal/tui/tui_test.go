@@ -3,9 +3,11 @@ package tui
 import (
 	"errors"
 	"flag"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -434,15 +436,18 @@ func TestAFailedReloadSaysSoAndKeepsTheDay(t *testing.T) {
 	}
 	for _, c := range []struct {
 		now  time.Time
+		err  error
 		want string
 	}{
-		{hm(14, 5), "as of 14:05 · could not load: the log is unreadable"},
-		{time.Time{}, "could not load: the log is unreadable"},
+		{hm(14, 5), errors.New("the log is unreadable"), "as of 14:05 · could not load: the log is unreadable"},
+		{time.Time{}, errors.New("the log is unreadable"), "could not load: the log is unreadable"},
+		{hm(14, 5), &fs.PathError{Op: "open", Path: "/Users/someone/.local/share/sift/events/2026-11.jsonl", Err: syscall.ENOTDIR},
+			"as of 14:05 · could not load: open 2026-11.jsonl: not a directory"},
 	} {
 		f := newFake()
 		f.now = c.now
 		m := sized(New(f, day0, ""), 120, 36)
-		f.fail = errors.New("the log is unreadable")
+		f.fail = c.err
 		m = ticked(m)
 		if got := last(m); !strings.HasSuffix(got, c.want+" ") || strings.Contains(got, "calendar: test") {
 			t.Fatalf("status line %q, want it to end %q", got, c.want)
