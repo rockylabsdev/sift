@@ -274,8 +274,8 @@ func TestNothingCountsAfterUntil(t *testing.T) {
 		last     time.Time
 	}{
 		{"a future meeting does not count", hm(12, 0), map[string]int{"A": 11}, 30, hm(10, 0)},
-		{"a meeting in progress counts up to until", hm(9, 45), map[string]int{"A": 11}, 15, hm(9, 45)},
-		{"a tail is cut at until", hm(9, 8), map[string]int{"A": 8}, 0, hm(9, 8)},
+		{"a meeting in progress counts through until's minute", hm(9, 45), map[string]int{"A": 11}, 16, hm(9, 46)},
+		{"a tail is cut after until's minute", hm(9, 8), map[string]int{"A": 9}, 0, hm(9, 9)},
 		{"zero until changes nothing", time.Time{}, map[string]int{"A": 11}, 90, hm(15, 0)},
 	}
 	for _, c := range cases {

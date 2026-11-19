@@ -50,7 +50,7 @@ type Settings struct {
 	EventsWin bool // an event during a meeting beats the meeting
 	Blocks    []Block
 	Agent     AgentMode // "" is AgentFill
-	Until     time.Time // no minute at or after it is counted; zero for no limit
+	Until     time.Time // no minute after the one it falls in is counted; zero for no limit
 }
 
 // Defaults are the rules as prototyped.
@@ -306,7 +306,7 @@ func For(start time.Time, events []Event, meetings []Meeting, s Settings) Day {
 	// keep only the day, and drop silences too short to be gaps
 	own, agentMin = own[pad:n-pad], agentMin[pad:n-pad]
 	if !s.Until.IsZero() {
-		for i := max(idx(s.Until)-pad, 0); i < len(own); i++ {
+		for i := max(idx(s.Until)+1-pad, 0); i < len(own); i++ {
 			own[i], agentMin[i] = none, false
 		}
 	}

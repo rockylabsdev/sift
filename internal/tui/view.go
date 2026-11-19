@@ -872,9 +872,9 @@ func (m Model) View() tea.View {
 		case m.msg != "":
 			status = fg(th.amber, m.msg+" ")
 		case m.err != nil:
-			status = "Could not reload: " + strings.TrimSuffix(m.err.Error(), ".") + "."
+			status = "could not load: " + strings.TrimSuffix(m.err.Error(), ".")
 			if !m.in.Now.IsZero() {
-				status += " Showing " + m.clockT(m.in.Now) + "."
+				status = "as of " + m.clockT(m.in.Now) + " · " + status
 			}
 			status = fg(th.amber, status+" ")
 		}

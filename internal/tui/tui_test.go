@@ -436,8 +436,8 @@ func TestAFailedReloadSaysSoAndKeepsTheDay(t *testing.T) {
 		now  time.Time
 		want string
 	}{
-		{hm(14, 5), "Could not reload: the log is unreadable. Showing 14:05."},
-		{time.Time{}, "Could not reload: the log is unreadable."},
+		{hm(14, 5), "as of 14:05 · could not load: the log is unreadable"},
+		{time.Time{}, "could not load: the log is unreadable"},
 	} {
 		f := newFake()
 		f.now = c.now
@@ -453,11 +453,11 @@ func TestAFailedReloadSaysSoAndKeepsTheDay(t *testing.T) {
 		if fr := frame(m); !strings.Contains(fr, "PUN-142") || !strings.Contains(fr, "OPS-77") {
 			t.Fatalf("the day on screen is gone:\n%s", fr)
 		}
-		if got := last(press(m, "t")); !strings.Contains(got, "Only meetings, gaps and ticketless time") || strings.Contains(got, "Could not reload") {
+		if got := last(press(m, "t")); !strings.Contains(got, "Only meetings, gaps and ticketless time") || strings.Contains(got, "could not load") {
 			t.Fatalf("a message does not take the status line over the reload error: %q", got)
 		}
 		f.fail = nil
-		if got := last(ticked(m)); strings.Contains(got, "Could not reload") || !strings.Contains(got, "calendar: test") {
+		if got := last(ticked(m)); strings.Contains(got, "could not load") || !strings.Contains(got, "calendar: test") {
 			t.Fatalf("after a good reload the status line is %q", got)
 		}
 	}

@@ -241,8 +241,8 @@ func TestTodayCountsNothingAfterNow(t *testing.T) {
 	h := newHarness(t)
 	h.prompt(9, 0, h.repo)
 	h.now = time.Date(2026, 11, 10, 9, 2, 0, 0, time.Local)
-	if _, _, data := h.envelope("draft"); data["total"].(float64) != 2 {
-		t.Fatalf("at 09:02 a 09:00 prompt counts %vm, want 2m", data["total"])
+	if _, _, data := h.envelope("draft"); data["total"].(float64) != 3 {
+		t.Fatalf("at 09:02 a 09:00 prompt counts %vm, want 3m, through the minute now is in", data["total"])
 	}
 	h.now = time.Date(2026, 11, 11, 9, 0, 0, 0, time.Local)
 	if _, _, data := h.envelope("draft", "--date", "2026-11-10"); data["total"].(float64) != 5 {
