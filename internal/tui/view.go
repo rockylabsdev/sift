@@ -37,8 +37,8 @@ func (m Model) span() (from, to int) {
 		to = (m.minute(s[len(s)-1].To) + 59) / 60 * 60
 	}
 	if m.live() {
-		h := m.minute(m.in.Now) / 60 * 60
-		from, to = min(from, h), min(max(to, h+60), m.dayLen())
+		h := m.minute(m.in.Now)
+		from, to = min(from, h/60*60), min(max(to, (h+30+59)/60*60), m.dayLen())
 	}
 	for to-from < 8*60 {
 		if to < m.dayLen() {
@@ -96,19 +96,21 @@ func (m Model) dayBox(w int) []string {
 	g := w - 2 - labelW - 1
 	col := func(c int) (int, int) { return from + c*(to-from)/g, from + (c+1)*(to-from)/g }
 	sel, hasSel := m.selected()
-	bgAt := func(c int) *rgb {
-		a, b := col(c)
-		if mid := (a + b) / 2; hasSel && mid >= m.minute(sel.From) && mid < m.minute(sel.To) {
-			return &th.sel
-		}
-		return nil
-	}
-
-	// on a live day the strip ends at now: later columns stay blank
+	// on a live day the strip ends at now, marked by a tinted column
 	nowCol, nowMin := g, m.dayLen()
 	if m.live() {
 		nowMin = m.minute(m.in.Now)
 		nowCol = (nowMin - from) * g / (to - from)
+	}
+	bgAt := func(c int) *rgb {
+		a, b := col(c)
+		if c == nowCol {
+			return &th.border
+		}
+		if mid := (a + b) / 2; hasSel && mid >= m.minute(sel.From) && mid < m.minute(sel.To) {
+			return &th.sel
+		}
+		return nil
 	}
 
 	var out []string
@@ -127,8 +129,16 @@ func (m Model) dayBox(w int) []string {
 		}
 	}
 	row := fg(th.dim, string(axis))
-	if later < g {
-		row = fg(th.dim, string(axis[:later])) + fg(th.faint, string(axis[later:]))
+	if nowCol < g {
+		var b strings.Builder
+		for c, r := range axis {
+			tone := th.dim
+			if c >= later {
+				tone = th.faint
+			}
+			b.WriteString(on(tone, bgAt(c), string(r)))
+		}
+		row = b.String()
 	}
 	out = append(out, strings.Repeat(" ", labelW)+row)
 
@@ -171,11 +181,15 @@ func (m Model) dayBox(w int) []string {
 		}
 	}
 
+	nowLine := ""
+	if nowCol < g {
+		nowLine = strings.Repeat(" ", labelW+nowCol) + on(th.faint, &th.border, " ")
+	}
 	left := []rune{0x40, 0x04, 0x02, 0x01}
 	right := []rune{0x80, 0x20, 0x10, 0x08}
 	for i, t := range m.tickets[:shown] {
 		if i > 0 && sep {
-			out = append(out, "")
+			out = append(out, nowLine)
 		}
 		h := m.hue(t)
 		for r := 0; r < evRows; r++ {

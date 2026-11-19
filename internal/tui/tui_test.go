@@ -81,7 +81,9 @@ func (f *fake) Load(day time.Time) (Input, error) {
 		ms = f.meetings
 	}
 	d := f.dec[day.Format("2006-01-02")]
-	return Input{Start: day, Events: mine, Day: derive.For(day, in, ms, derive.Defaults), Decisions: d,
+	set := derive.Defaults
+	set.Until = f.now
+	return Input{Start: day, Events: mine, Day: derive.For(day, in, ms, set), Decisions: d,
 		IdleGap: 10, Meetings: "calendar: test", Today: day0.AddDate(0, 0, 2), Tracker: "Jira", Sent: f.sent, Now: f.now}, nil
 }
 
