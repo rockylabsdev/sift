@@ -1,7 +1,8 @@
 // Package derive turns one day's evidence into the work it stands for.
 //
-// Day is a pure function: the same events, meetings and settings always
-// give the same day. It reads no clock and no files.
+// For is a pure function: the same events, meetings and settings always
+// give the same day. It reads no clock and no files; a caller that wants
+// nothing counted after now passes it as Settings.Until.
 package derive
 
 import (
@@ -49,6 +50,7 @@ type Settings struct {
 	EventsWin bool // an event during a meeting beats the meeting
 	Blocks    []Block
 	Agent     AgentMode // "" is AgentFill
+	Until     time.Time // no minute at or after it is counted; zero for no limit
 }
 
 // Defaults are the rules as prototyped.
@@ -303,6 +305,11 @@ func For(start time.Time, events []Event, meetings []Meeting, s Settings) Day {
 
 	// keep only the day, and drop silences too short to be gaps
 	own, agentMin = own[pad:n-pad], agentMin[pad:n-pad]
+	if !s.Until.IsZero() {
+		for i := max(idx(s.Until)-pad, 0); i < len(own); i++ {
+			own[i], agentMin[i] = none, false
+		}
+	}
 	for i := 0; i < len(own); {
 		j := i
 		for j < len(own) && own[j] == own[i] {

@@ -20,7 +20,7 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	h := &harness{t: t, env: map[string]string{"XDG_DATA_HOME": t.TempDir(), "XDG_CONFIG_HOME": t.TempDir(), "HOME": t.TempDir()}}
-	h.now = time.Date(2026, 11, 10, 9, 0, 0, 0, time.Local)
+	h.now = time.Date(2026, 11, 10, 23, 0, 0, 0, time.Local)
 	h.repo = t.TempDir()
 	out, err := exec.Command("git", "-C", h.repo, "init", "-q", "-b", "feature/PUN-142-side-lock").CombinedOutput()
 	if err != nil {
@@ -43,6 +43,7 @@ func (h *harness) run(stdin string, args ...string) (code int, stdout, stderr st
 // prompt records a prompt the way the plugin's hook does, at h:m.
 func (h *harness) prompt(hh, mm int, dir string) {
 	h.t.Helper()
+	defer func(now time.Time) { h.now = now }(h.now)
 	h.now = time.Date(2026, 11, 10, hh, mm, 0, 0, time.Local)
 	in, _ := json.Marshal(map[string]string{"cwd": dir, "hook_event_name": "UserPromptSubmit"})
 	code, out, errOut := h.run(string(in), "record", "--hook")
@@ -231,5 +232,18 @@ func TestABlockOwnsItsTime(t *testing.T) {
 	}
 	if code, _, _ := h.run("", "block", "OPS-77", "10:00-09:00"); code != 64 {
 		t.Fatalf("a backwards block: exit %d", code)
+	}
+}
+
+func TestTodayCountsNothingAfterNow(t *testing.T) {
+	h := newHarness(t)
+	h.prompt(9, 0, h.repo)
+	h.now = time.Date(2026, 11, 10, 9, 2, 0, 0, time.Local)
+	if _, _, data := h.envelope("draft"); data["total"].(float64) != 2 {
+		t.Fatalf("at 09:02 a 09:00 prompt counts %vm, want 2m", data["total"])
+	}
+	h.now = time.Date(2026, 11, 11, 9, 0, 0, 0, time.Local)
+	if _, _, data := h.envelope("draft", "--date", "2026-11-10"); data["total"].(float64) != 5 {
+		t.Fatalf("the next day the prompt counts %vm, want its 5m tail", data["total"])
 	}
 }
