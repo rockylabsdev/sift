@@ -381,16 +381,47 @@ func TestALiveDayMarksNow(t *testing.T) {
 		if empty {
 			f.events, f.meetings = nil, nil
 		}
-		if fr := frame(sized(New(f, day0, ""), 120, 36)); strings.Contains(fr, "▼") || strings.Contains(fr, "live") {
+		if fr := frame(sized(New(f, day0, ""), 120, 36)); strings.Contains(fr, "live") {
 			t.Fatalf("a day loaded without a clock is marked live:\n%s", fr)
 		}
-		f.now = hm(20, 30)
+		f.now = hm(10, 15)
 		fr := frame(sized(New(f, day0, ""), 120, 36))
-		if !strings.Contains(fr, "▼") || !strings.Contains(strings.SplitN(fr, "\n", 2)[0], "live") {
-			t.Fatalf("a live day has no now marker or live label:\n%s", fr)
+		lines := strings.Split(fr, "\n")
+		if !strings.Contains(lines[0], "live · 10:15") || strings.Contains(fr, "▼") {
+			t.Fatalf("a live day's header does not say live · 10:15, or it draws a marker:\n%s", fr)
+		}
+		if !empty {
+			axis := []rune(lines[2])
+			col := func(label string) int {
+				for i := 0; i+1 < len(axis); i++ {
+					if string(axis[i:i+2]) == label {
+						return i
+					}
+				}
+				t.Fatalf("no %s on the axis %q", label, lines[2])
+				return 0
+			}
+			before, after := col("10"), col("11")
+			baselines := 0
+			for _, l := range lines[3:] {
+				if strings.HasPrefix(l, "╰") {
+					break
+				}
+				r := []rune(l)
+				if len(r) <= after || !strings.ContainsRune("─━┅", r[before]) {
+					continue
+				}
+				baselines++
+				if rest := string(r[after : len(r)-1]); strings.ContainsAny(rest, "─━┅") {
+					t.Errorf("a baseline runs past now: %q", l)
+				}
+			}
+			if baselines != 2 {
+				t.Fatalf("%d baselines reach 10:00, want both lanes':\n%s", baselines, fr)
+			}
 		}
 		f.now = day0.AddDate(0, 0, 1).Add(time.Hour)
-		if fr := frame(sized(New(f, day0, ""), 120, 36)); strings.Contains(fr, "▼") || strings.Contains(fr, "live") {
+		if fr := frame(sized(New(f, day0, ""), 120, 36)); strings.Contains(fr, "live") {
 			t.Fatalf("a day the clock has passed is marked live:\n%s", fr)
 		}
 	}

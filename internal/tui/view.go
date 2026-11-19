@@ -101,8 +101,16 @@ func (m Model) dayBox(w int) []string {
 		return nil
 	}
 
+	// on a live day the strip ends at now: later columns stay blank
+	nowCol, nowMin := g, m.dayLen()
+	if m.live() {
+		nowMin = m.minute(m.in.Now)
+		nowCol = (nowMin - from) * g / (to - from)
+	}
+
 	var out []string
 	axis := []rune(strings.Repeat(" ", g))
+	later := g // where the hour labels at or after now begin
 	step := 60
 	if (to-from)/60 > 10 {
 		step = 120
@@ -110,11 +118,14 @@ func (m Model) dayBox(w int) []string {
 	for h := from; h < to; h += step {
 		if c := (h - from) * g / (to - from); c+2 <= g {
 			copy(axis[c:], []rune(m.in.Day.Start.Add(time.Duration(h)*time.Minute).Format("15")))
+			if h >= nowMin && later == g {
+				later = c
+			}
 		}
 	}
 	row := fg(th.dim, string(axis))
-	if c := (m.minute(m.in.Now) - from) * g / (to - from); m.live() && c >= 0 && c < g {
-		row = fg(th.dim, string(axis[:c])) + fg(th.focus, "▼") + fg(th.dim, string(axis[c+1:]))
+	if later < g {
+		row = fg(th.dim, string(axis[:later])) + fg(th.faint, string(axis[later:]))
 	}
 	out = append(out, strings.Repeat(" ", labelW)+row)
 
@@ -194,6 +205,10 @@ func (m Model) dayBox(w int) []string {
 		}
 		var b strings.Builder
 		for c := 0; c < g; c++ {
+			if c > nowCol {
+				b.WriteString(on(th.faint, bgAt(c), " "))
+				continue
+			}
 			a, z := col(c)
 			own, agent := 0, 0
 			for mm := a; mm < z && mm < len(m.effT); mm++ {
@@ -265,6 +280,9 @@ func (m Model) dayBox(w int) []string {
 				other[c0+j] = on(tone, bgAt(c0+j), string(r))
 			}
 		}
+	}
+	for c := nowCol + 1; c < g; c++ {
+		other[c] = on(th.faint, bgAt(c), " ")
 	}
 	out = append(out, pad(" "+fg(th.dim, "other"), labelW)+strings.Join(other, ""))
 
@@ -783,7 +801,7 @@ func (m Model) header() string {
 		day += fg(th.muted, " · "+a)
 	}
 	if m.live() {
-		day += fg(th.muted, " · ") + fg(th.focus, "live")
+		day += fg(th.muted, " · ") + fg(th.focus, "live · "+m.clockT(m.in.Now))
 	}
 	badge := fg(th.dim, "draft")
 	right := fmt.Sprintf("%s · %s to send ", plural(len(m.dr.Sendable()), "ticket"), dur(m.dr.Total))
@@ -856,7 +874,7 @@ func (m Model) View() tea.View {
 		case m.err != nil:
 			status = "Could not reload: " + strings.TrimSuffix(m.err.Error(), ".") + "."
 			if !m.in.Now.IsZero() {
-				status += " Showing " + m.in.Now.Format("15:04") + "."
+				status += " Showing " + m.clockT(m.in.Now) + "."
 			}
 			status = fg(th.amber, status+" ")
 		}
