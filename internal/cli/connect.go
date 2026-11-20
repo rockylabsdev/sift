@@ -127,9 +127,7 @@ func (r *run) fetchMeetings(cfg Config, start time.Time) calendar.Day {
 	if err != nil {
 		return calendar.Day{Source: calendar.None, Problem: err.Error()}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), calendar.Timeout+time.Second)
-	defer cancel()
-	return calendar.Load(ctx, nil, dir, address, cfg.Email, start)
+	return calendar.Load(context.Background(), nil, dir, address, cfg.Email, start)
 }
 
 // calendarNote says where a day's meetings came from.
@@ -274,10 +272,8 @@ func (r *run) setup(args []string) (any, func(io.Writer), error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), calendar.Timeout+time.Second)
-		defer cancel()
 		now := r.Now()
-		day := calendar.Load(ctx, nil, dir, address, email, time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()))
+		day := calendar.Load(context.Background(), nil, dir, address, email, time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()))
 		if day.Source != calendar.Fetched {
 			return nil, nil, fmt.Errorf("the calendar could not be read: %s", day.Problem)
 		}

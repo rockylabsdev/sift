@@ -115,7 +115,16 @@ func TestLoadFailures(t *testing.T) {
 			f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
 		}, func() (context.Context, context.CancelFunc) {
 			return context.WithTimeout(context.Background(), 50*time.Millisecond)
-		}, "did not answer in time"},
+		}, "took longer than"},
+		{"too slow to finish", func(f *feed) {
+			f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte("BEGIN:VCALENDAR\r\n"))
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+			})
+		}, func() (context.Context, context.CancelFunc) {
+			return context.WithTimeout(context.Background(), 50*time.Millisecond)
+		}, "took longer than"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

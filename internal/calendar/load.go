@@ -34,8 +34,9 @@ type Day struct {
 	Problem string `json:"-"`
 }
 
-// Timeout bounds one fetch of the feed.
-const Timeout = 5 * time.Second
+// Timeout bounds one fetch of the feed. Outlook publishes a calendar's
+// whole history in one file, which can take several seconds to arrive.
+const Timeout = 30 * time.Second
 
 // most bounds the feed's size; years of history stay well under it.
 const most = 64 << 20
@@ -111,6 +112,7 @@ func fetch(ctx context.Context, client *http.Client, address string) ([]byte, er
 	}
 	ctx, cancel := context.WithTimeout(ctx, Timeout)
 	defer cancel()
+	slow := tooSlow(ctx)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {
 		return nil, errors.New("the calendar address is not a valid URL")
@@ -120,7 +122,7 @@ func fetch(ctx context.Context, client *http.Client, address string) ([]byte, er
 		var ue *url.Error
 		switch {
 		case errors.Is(err, context.DeadlineExceeded):
-			return nil, errors.New("the calendar did not answer in time")
+			return nil, slow
 		case errors.As(err, &ue):
 			return nil, fmt.Errorf("could not reach the calendar (%s)", scrub(ue.Err.Error(), address))
 		default:
@@ -133,12 +135,21 @@ func fetch(ctx context.Context, client *http.Client, address string) ([]byte, er
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, most+1))
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, slow
+		}
 		return nil, errors.New("the calendar stopped answering partway")
 	}
 	if len(b) > most {
 		return nil, errors.New("the calendar is too large to read")
 	}
 	return b, nil
+}
+
+// tooSlow is the error for a fetch that runs past ctx's deadline.
+func tooSlow(ctx context.Context) error {
+	deadline, _ := ctx.Deadline()
+	return fmt.Errorf("the calendar took longer than %s to arrive", time.Until(deadline).Round(time.Second))
 }
 
 // scrub removes the address from a transport error, which can quote it
