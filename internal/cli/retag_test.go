@@ -238,3 +238,23 @@ func TestTheReviewPreviewsSavesAndTakesBackARetag(t *testing.T) {
 		t.Fatalf("recent %q; want the retag's ticket, then the prompts' newest first", got)
 	}
 }
+
+func TestRetagUndo(t *testing.T) {
+	h := newHarness(t)
+	h.say(9, 0, "s1", h.repo, "start")
+	h.say(9, 5, "s1", h.repo, "/sift retag PUN-160")
+	_, _, data := h.envelope("retag", "--list")
+	at := data["retags"].([]any)[0].(map[string]any)["at"].(string)
+	if code, e, _ := h.envelope("retag", "--undo", "--session", "s1"); code != 64 || e.Outcome != "usage" {
+		t.Fatalf("--undo without --at: exit %d %+v", code, e)
+	}
+	if code, out, _ := h.run("", "retag", "--undo", "--session", "s1", "--at", at); code != 0 || !strings.Contains(out, "Took back session s1's retag") {
+		t.Fatalf("exit %d %q", code, out)
+	}
+	if got := h.minutes(); got["PUN-142"] != 10 || got["PUN-160"] != 0 {
+		t.Fatalf("%v; want s1's time back on PUN-142", got)
+	}
+	if code, _, _ := h.run("", "retag", "--undo", "--session", "s1", "--at", at); code == 0 {
+		t.Fatal("taking back a retag twice says nothing")
+	}
+}

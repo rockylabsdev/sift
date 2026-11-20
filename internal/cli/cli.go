@@ -89,6 +89,7 @@ const usage = `sift: a terminal worklog drafter
   sift retag KEY --session ID        count a session's time for KEY instead
          [--was KEY|--was-none] [--from HH:MM] [--date YYYY-MM-DD]
   sift retag --list                  the retags made so far
+  sift retag --undo --session ID     take back the retag made --at TIME
   sift confirm [--date YYYY-MM-DD]   accept the day: one worklog per ticket, sent
   sift sync                          send worklogs still owed
   sift log [--from D] [--to D]       worklogs, this week by default
