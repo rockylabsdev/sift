@@ -28,6 +28,7 @@ type Input struct {
 	Tracker   string            // where confirmed worklogs go: "Jira", or "" for the local log
 	Sent      map[string]Status // a confirmed day's worklogs, by ticket, as the outbox has them
 	Now       time.Time         // the clock when the day was loaded; zero means not live
+	Retags    []evidence.Retag  // the retags read into this day's sessions, in the order made
 }
 
 // Status is where one confirmed worklog stands.
@@ -47,6 +48,18 @@ type Source interface {
 	// Refresh brings day's slow sources, such as the calendar, up to date.
 	// It runs off the UI goroutine, concurrently with Load.
 	Refresh(day time.Time)
+	// Preview loads day as it would be after c, and saves nothing.
+	Preview(day time.Time, c RetagChange) (Input, error)
+	// Retag saves c.
+	Retag(c RetagChange) error
+	// Recent lists the tickets seen in the two weeks up to day, newest first.
+	Recent(day time.Time) []string
+}
+
+// RetagChange is a retag to make, or, with Undo, one to take back.
+type RetagChange struct {
+	Retag evidence.Retag
+	Undo  bool
 }
 
 // refresh is how often the screen reloads the day it shows.

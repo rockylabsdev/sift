@@ -22,8 +22,85 @@ const lookback = 90
 // source is the review screen's view of the CLI's data.
 type source struct{ r *run }
 
-func (s source) Load(day time.Time) (tui.Input, error) {
-	l, err := s.r.load(day.Format("2006-01-02"))
+func (s source) Load(day time.Time) (tui.Input, error) { return s.loadAs(day, nil) }
+
+func (s source) Preview(day time.Time, c tui.RetagChange) (tui.Input, error) {
+	rt := c.Retag
+	if rt.At.IsZero() {
+		rt.At = s.r.Now()
+	}
+	return s.loadAs(day, func(rs []evidence.Retag) []evidence.Retag {
+		out := append([]evidence.Retag{}, rs...)
+		if !c.Undo {
+			return append(out, rt)
+		}
+		for i := len(out) - 1; i >= 0; i-- { // the one Remove takes back
+			if out[i].Session == rt.Session && out[i].At.Equal(rt.At) {
+				return append(out[:i], out[i+1:]...)
+			}
+		}
+		return out
+	})
+}
+
+// Retag saves c. A retag made here takes the ticket it moves from as the
+// screen read it, through the retags already made, as /sift retag does.
+func (s source) Retag(c tui.RetagChange) error {
+	dir, err := s.r.dataDir()
+	if err != nil {
+		return err
+	}
+	store := evidence.Retags{Dir: dir}
+	if c.Undo {
+		return store.Remove(c.Retag.Session, c.Retag.At)
+	}
+	rt := c.Retag
+	if rt.Was == rt.Ticket {
+		return fmt.Errorf("that conversation already counts for %s", rt.Ticket)
+	}
+	rt.At = s.r.Now()
+	return store.Append(rt)
+}
+
+// Recent lists the tickets prompts named, or retags moved time to, in the
+// two weeks up to the end of day, the latest first.
+func (s source) Recent(day time.Time) []string {
+	dir, err := s.r.dataDir()
+	if err != nil {
+		return nil
+	}
+	from, to := day.AddDate(0, 0, -14), day.AddDate(0, 0, 1)
+	events, _, _ := evidence.Log{Dir: dir}.Between(from, to)
+	rs, _, _ := evidence.Retags{Dir: dir}.All()
+	type seen struct {
+		at     time.Time
+		ticket string
+	}
+	var all []seen
+	for _, e := range events {
+		if e.Ticket != nil {
+			all = append(all, seen{e.At, *e.Ticket})
+		}
+	}
+	for _, rt := range rs {
+		if !rt.At.Before(from) && rt.At.Before(to) {
+			all = append(all, seen{rt.At, rt.Ticket})
+		}
+	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].at.After(all[j].at) })
+	var out []string
+	done := map[string]bool{}
+	for _, x := range all {
+		if !done[x.ticket] {
+			done[x.ticket] = true
+			out = append(out, x.ticket)
+		}
+	}
+	return out
+}
+
+func (s source) loadAs(day time.Time, edit func([]evidence.Retag) []evidence.Retag) (tui.Input, error) {
+	l, err := s.r.loadAs(day.Format("2006-01-02"), edit)
 	if err != nil {
 		return tui.Input{}, err
 	}
@@ -31,6 +108,15 @@ func (s source) Load(day time.Time) (tui.Input, error) {
 	in := tui.Input{Start: l.Start, Events: l.Events, Day: l.Day, Decisions: l.Decisions,
 		Round: l.Config.Round, IdleGap: l.Config.IdleGap, Meetings: s.note(l),
 		Today: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()), Tracker: s.Tracker(), Now: now}
+	sessions := map[string]bool{}
+	for _, e := range l.Events {
+		sessions[e.Session] = e.Session != ""
+	}
+	for _, rt := range l.Retags {
+		if sessions[rt.Session] {
+			in.Retags = append(in.Retags, rt)
+		}
+	}
 	if l.Decisions.Confirmed != nil {
 		if store, err := s.r.worklogs(); err == nil {
 			key := l.Start.Format("2006-01-02")

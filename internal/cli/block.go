@@ -42,7 +42,7 @@ func (r *run) block(args []string) (any, func(io.Writer), error) {
 		return nil, nil, usageError{"usage: sift block KEY HH:MM-HH:MM [--date YYYY-MM-DD] [--remove]"}
 	}
 	key := strings.ToUpper(pos[0])
-	start, _, err := r.day(date)
+	start, _, _, err := r.day(date, nil)
 	if err != nil {
 		return nil, nil, err
 	}
