@@ -87,11 +87,11 @@ func (r *run) meetings(cfg Config, start time.Time, wait bool) calendar.Day {
 	case dl == nil:
 		dl = r.download(cfg, func(*download) bool { return false })
 	}
-	return r.dayOf(dl, start)
+	return r.dayOf(dl, start, calendar.Unlisted(cfg.NoAttendees))
 }
 
 // dayOf reads start from dl, and keeps it while dl is the latest download.
-func (r *run) dayOf(dl *download, start time.Time) calendar.Day {
+func (r *run) dayOf(dl *download, start time.Time, rule calendar.Unlisted) calendar.Day {
 	var d calendar.Day
 	dir, err := r.dataDir()
 	switch {
@@ -100,7 +100,7 @@ func (r *run) dayOf(dl *download, start time.Time) calendar.Day {
 	case err != nil:
 		d = calendar.Day{Source: calendar.None, Problem: err.Error()}
 	default:
-		d = calendar.DayOf(dir, dl.feed, dl.err, start)
+		d = calendar.DayOf(dir, dl.feed, dl.err, start, rule)
 	}
 	r.calMu.Lock()
 	defer r.calMu.Unlock()
@@ -162,8 +162,21 @@ func (r *run) fetchFeed(cfg Config) (*calendar.Feed, error) {
 	return calendar.Fetch(context.Background(), nil, address, cfg.Email, r.Now().Location())
 }
 
-// calendarNote says where a day's meetings came from.
+// calendarNote says where a day's meetings came from, and how events
+// that name no one counted.
 func calendarNote(c calendar.Day) string {
+	note := calendarCount(c)
+	switch {
+	case c.Source == calendar.None || c.Source == calendar.Pending || !c.Unlisted:
+	case c.Bare:
+		note += " · published feed without attendees, events count as meetings"
+	default:
+		note += " · events without attendees count as meetings"
+	}
+	return note
+}
+
+func calendarCount(c calendar.Day) string {
 	switch {
 	case c.Problem != "":
 		return c.Problem
@@ -307,7 +320,7 @@ func (r *run) setup(args []string) (any, func(io.Writer), error) {
 			return nil, nil, err
 		}
 		now := r.Now()
-		day := calendar.Load(context.Background(), nil, dir, address, email, time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()))
+		day := calendar.Load(context.Background(), nil, dir, address, email, calendar.Unlisted(cfg.NoAttendees), time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()))
 		if day.Source != calendar.Fetched {
 			return nil, nil, fmt.Errorf("the calendar could not be read: %s", day.Problem)
 		}

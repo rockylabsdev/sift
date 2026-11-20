@@ -31,6 +31,10 @@ type Day struct {
 	Source   Source    `json:"-"`
 	// At is when the meetings were fetched; zero when Source is None.
 	At time.Time `json:"at"`
+	// Unlisted is whether events that name no one counted as meetings, and
+	// Bare whether that is because no event in the feed names anyone.
+	Unlisted bool `json:"unlisted,omitempty"`
+	Bare     bool `json:"bare,omitempty"`
 	// Problem says, for the user, why the meetings are stale or missing.
 	Problem string `json:"-"`
 }
@@ -57,15 +61,15 @@ func Fetch(ctx context.Context, client *http.Client, address, owner string, loc 
 	return f, nil
 }
 
-// DayOf reads day from f and saves it under dataDir. err is why f could
-// not be fetched; then DayOf falls back to the saved day.
-func DayOf(dataDir string, f *Feed, err error, day time.Time) Day {
+// DayOf reads day from f by rule and saves it under dataDir. err is why f
+// could not be fetched; then DayOf falls back to the saved day.
+func DayOf(dataDir string, f *Feed, err error, day time.Time, rule Unlisted) Day {
 	cache := filepath.Join(dataDir, "calendar", day.Format("2006-01-02")+".json")
 	if err != nil {
 		return fallback(cache, err.Error(), day.Location())
 	}
-	d := Day{Source: Fetched, At: f.At}
-	d.Meetings, d.Skipped = f.Day(day)
+	d := Day{Source: Fetched, At: f.At, Unlisted: f.Counts(rule), Bare: !f.Listed()}
+	d.Meetings, d.Skipped = f.Day(day, rule)
 	if err := save(cache, d); err != nil {
 		d.Problem = "The calendar was read but could not be saved for later: " + err.Error()
 	}
@@ -74,12 +78,12 @@ func DayOf(dataDir string, f *Feed, err error, day time.Time) Day {
 
 // Load fetches the feed at address and reads day from it, as DayOf does.
 // An empty address means no calendar and no problem.
-func Load(ctx context.Context, client *http.Client, dataDir, address, owner string, day time.Time) Day {
+func Load(ctx context.Context, client *http.Client, dataDir, address, owner string, rule Unlisted, day time.Time) Day {
 	if address == "" {
 		return Day{Source: None}
 	}
 	f, err := Fetch(ctx, client, address, owner, day.Location())
-	return DayOf(dataDir, f, err, day)
+	return DayOf(dataDir, f, err, day, rule)
 }
 
 func fallback(cache, why string, loc *time.Location) Day {

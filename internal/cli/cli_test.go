@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -361,5 +363,38 @@ func TestTheReviewFetchesTheFeedOnceAndNeverOnTheUIGoroutine(t *testing.T) {
 	}
 	if in, _ := s.Load(today.AddDate(0, 0, -2)); in.Meetings != "calendar: 1 meeting" || in.Pending {
 		t.Fatalf("after the fetch, two days back says %q, pending %v", in.Meetings, in.Pending)
+	}
+}
+
+func TestDraftSaysHowEventsWithoutAttendeesCounted(t *testing.T) {
+	ics, err := os.ReadFile(filepath.Join("..", "calendar", "testdata", "published.ics"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write(ics) }))
+	defer srv.Close()
+	cases := []struct{ setting, want string }{
+		{"", "calendar: 2 meetings, 3 left out · published feed without attendees, events count as meetings"},
+		{"meeting", "calendar: 2 meetings, 3 left out · published feed without attendees, events count as meetings"},
+		{"skip", "calendar: 0 meetings, 5 left out"},
+	}
+	for _, c := range cases {
+		t.Run(c.setting, func(t *testing.T) {
+			h := newHarness(t)
+			secrets := filepath.Join(h.env["XDG_CONFIG_HOME"], "sift", "secrets")
+			os.MkdirAll(secrets, 0o700)
+			os.WriteFile(filepath.Join(secrets, "calendar-url"), []byte(srv.URL+"/cal.ics"), 0o600)
+			cfg, _ := json.Marshal(map[string]string{"email": "me@example.com", "calendar_no_attendees": c.setting})
+			os.WriteFile(filepath.Join(h.env["XDG_CONFIG_HOME"], "sift", "config.json"), cfg, 0o600)
+			if _, _, data := h.envelope("draft", "--date", "2026-11-10"); data["meetings"] != c.want {
+				t.Fatalf("draft says %q, want %q", data["meetings"], c.want)
+			}
+		})
+	}
+	h := newHarness(t)
+	os.MkdirAll(filepath.Join(h.env["XDG_CONFIG_HOME"], "sift"), 0o700)
+	os.WriteFile(filepath.Join(h.env["XDG_CONFIG_HOME"], "sift", "config.json"), []byte(`{"calendar_no_attendees": "always"}`), 0o600)
+	if code, _, stderr := h.run("", "draft"); code == 0 || !strings.Contains(stderr, "calendar_no_attendees must be meeting or skip") {
+		t.Fatalf("an unknown setting: exit %d, %q", code, stderr)
 	}
 }

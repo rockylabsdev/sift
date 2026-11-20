@@ -42,7 +42,7 @@ func newFeed(t *testing.T) *feed {
 
 func (f *feed) load(t *testing.T, ctx context.Context, dir string) Day {
 	t.Helper()
-	d := Load(ctx, f.srv.Client(), dir, f.address, owner, at("2026-11-10", "12:00"))
+	d := Load(ctx, f.srv.Client(), dir, f.address, owner, Detect, at("2026-11-10", "12:00"))
 	if strings.Contains(d.Problem, secret) {
 		t.Errorf("problem names the secret address: %q", d.Problem)
 	}
@@ -95,7 +95,7 @@ func TestLoadCacheIsPerDay(t *testing.T) {
 	f.load(t, context.Background(), dir)
 
 	f.status = http.StatusInternalServerError
-	d := Load(context.Background(), f.srv.Client(), dir, f.address, owner, at("2026-11-11", "12:00"))
+	d := Load(context.Background(), f.srv.Client(), dir, f.address, owner, Detect, at("2026-11-11", "12:00"))
 	if d.Source != None || len(d.Meetings) != 0 {
 		t.Errorf("another day's cache was used: %+v", d)
 	}
@@ -147,7 +147,7 @@ func TestLoadFailures(t *testing.T) {
 }
 
 func TestLoadWithoutACalendar(t *testing.T) {
-	d := Load(context.Background(), nil, t.TempDir(), "", owner, at("2026-11-10", "12:00"))
+	d := Load(context.Background(), nil, t.TempDir(), "", owner, Detect, at("2026-11-10", "12:00"))
 	if d.Source != None || d.Problem != "" {
 		t.Errorf("got %+v", d)
 	}

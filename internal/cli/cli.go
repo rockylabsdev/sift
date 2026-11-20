@@ -232,6 +232,9 @@ type Config struct {
 	} `json:"jira,omitempty"`
 	Email     string `json:"email,omitempty"`      // yours, to tell your calendar invitations apart
 	AgentTime string `json:"agent_time,omitempty"` // "fill" (default), "workday" or "off"
+	// NoAttendees is how events naming no attendee or organizer count:
+	// "meeting", "skip", or unset to count them when no event names anyone.
+	NoAttendees string `json:"calendar_no_attendees,omitempty"`
 }
 
 func (r *run) config() (Config, error) {
@@ -264,6 +267,11 @@ func (r *run) config() (Config, error) {
 	case "", derive.AgentFill, derive.AgentWorkday, derive.AgentOff:
 	default:
 		return c, fmt.Errorf("%s: agent_time must be fill, workday or off, not %q", path, c.AgentTime)
+	}
+	switch calendar.Unlisted(c.NoAttendees) {
+	case calendar.Detect, calendar.AsMeetings, calendar.AsAlone:
+	default:
+		return c, fmt.Errorf("%s: calendar_no_attendees must be meeting or skip, not %q", path, c.NoAttendees)
 	}
 	if c.Round != 0 && c.Round != 5 && c.Round != 15 {
 		return c, fmt.Errorf("%s: round_minutes must be 0, 5 or 15, not %d", path, c.Round)
