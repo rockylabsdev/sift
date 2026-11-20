@@ -6,7 +6,7 @@
     {
       "name": "sift",
       "description": "Records your prompts as evidence, nudges about days to review, /sift, and a gate on an agent's confirm",
-      "source": { "source": "git-subdir", "url": "https://github.com/rockylabsdev/sift.git", "path": "plugin", "ref": "v0.1.0-rc.3" }
+      "source": { "source": "git-subdir", "url": "https://github.com/rockylabsdev/sift.git", "path": "plugin", "ref": "v0.1.0-rc.4" }
     }
   ]
 }
