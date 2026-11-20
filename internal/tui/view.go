@@ -450,6 +450,14 @@ func (m Model) stretchBox(w, h int) []string {
 			if am, _ := m.agentIn(s); am > 0 {
 				name += fg(th.dim, " · agents "+dur(am))
 			}
+			if from := m.movedFrom(s); from != "" {
+				for _, hint := range []string{" ← " + from, " · moved"} {
+					if lipgloss.Width(name+hint) <= whatW {
+						name += fg(th.muted, hint)
+						break
+					}
+				}
+			}
 			if s.Unassigned > 0 {
 				mark = fg(tone, "?")
 			}
@@ -875,10 +883,18 @@ func (m Model) View() tea.View {
 		out = append(out, th.box(1, "day", fg(th.dim, "evidence and counted time"), false, m.w, topH, m.dayBox(m.w))...)
 		botH := m.h - topH - 2
 		rw := max(34, min(46, m.w*36/100))
-		if m.inspect > 0 {
+		_, picking := m.mode.(choosing)
+		if _, ok := m.mode.(typing); ok {
+			picking = true
+		}
+		if m.inspect > 0 && !picking {
 			out = append(out, m.inspectBox(m.w, botH)...)
 		} else {
-			l, r := m.stretchBox(m.w-rw, botH), m.draftBox(rw, botH)
+			l := m.stretchBox(m.w-rw, botH)
+			if picking {
+				l = m.retagBox(m.w-rw, botH)
+			}
+			r := m.draftBox(rw, botH)
 			for i := range l {
 				out = append(out, l[i]+r[i])
 			}
@@ -895,20 +911,28 @@ func (m Model) View() tea.View {
 			}
 			status = fg(th.amber, status+" ")
 		}
-		keys := " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("+ −", "adjust") + key("c", "confirm") + key("[ ]", "day") + key("T", th.Name) + key("q", "quit")
+		keys := " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("r", "retag") + key("+ −", "adjust") + key("c", "confirm") + key("[ ]", "day") + key("T", th.Name) + key("q", "quit")
 		if m.dr.Confirmed {
 			keys = " " + key("↑↓", "select") + key("e", "inspect") + key("[ ]", "day") + key("T", th.Name) + key("q", "quit") + fg(th.muted, "confirmed, read-only   ")
 		}
 		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && !m.dr.Confirmed {
-			keys = " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("+−", "adjust") + key("c", "confirm") + key("[]", "day") + key("q", "quit")
+			keys = " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("r", "retag") + key("+−", "adjust") + key("c", "confirm") + key("[]", "day") + key("q", "quit")
 		}
 		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && m.msg == "" && m.err == nil {
 			status = ""
 		}
-		if _, ok := m.mode.(confirming); ok {
+		switch m.mode.(type) {
+		case nil:
+		case confirming:
 			keys = " " + bold(th.text, fmt.Sprintf("Confirm %s: %s, %s to %s?", m.in.Start.Format("Mon 2 Jan"), plural(len(m.dr.Sendable()), "worklog"), dur(m.dr.Total), m.src.Tracker())) +
 				fg(th.dim, "   y confirms · any other key cancels")
 			status = ""
+		default:
+			var room bool
+			keys, room = m.retagKeys(key)
+			if !room || m.msg == "" {
+				status = ""
+			}
 		}
 		out = append(out, spread(keys, status, m.w))
 	}

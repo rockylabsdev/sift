@@ -154,6 +154,16 @@ func press(m Model, keys ...string) Model {
 			msg = tea.KeyPressMsg{Code: tea.KeyDown}
 		case "esc":
 			msg = tea.KeyPressMsg{Code: tea.KeyEscape}
+		case "up":
+			msg = tea.KeyPressMsg{Code: tea.KeyUp}
+		case "tab":
+			msg = tea.KeyPressMsg{Code: tea.KeyTab}
+		case "enter":
+			msg = tea.KeyPressMsg{Code: tea.KeyEnter}
+		case "backspace":
+			msg = tea.KeyPressMsg{Code: tea.KeyBackspace}
+		case "ctrl+f":
+			msg = tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl}
 		default:
 			msg = tea.KeyPressMsg{Code: []rune(k)[0], Text: k}
 		}

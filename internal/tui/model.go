@@ -266,6 +266,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.msg = err.Error()
 			}
 			m.load(m.in.Start)
+		default:
+			return m.answerRetag(k), nil
 		}
 	}
 	return m, nil
@@ -286,6 +288,8 @@ func (m Model) browse(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "q":
 		return m, tea.Quit
+	case "r":
+		return m.startRetag(), nil
 	case "up", "k":
 		m.cur = max(m.cur-1, 0)
 	case "down", "j":
