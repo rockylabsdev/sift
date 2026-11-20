@@ -15,32 +15,37 @@ import (
 
 // day reads the evidence around a local calendar day: the day itself plus
 // enough either side for a stretch that crosses midnight, with retags
-// applied. Every reader of a day goes through here.
-func (r *run) day(date string) (time.Time, []evidence.Event, error) {
+// applied, and returns the retags it applied. Every reader of a day goes
+// through here. edit, if not nil, changes the retags read before they
+// apply, to read the day as it would be after a retag not yet saved.
+func (r *run) day(date string, edit func([]evidence.Retag) []evidence.Retag) (time.Time, []evidence.Event, []evidence.Retag, error) {
 	now := r.Now()
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	if date != "" {
 		d, err := time.ParseInLocation("2006-01-02", date, now.Location())
 		if err != nil {
-			return start, nil, usageError{fmt.Sprintf("--date takes YYYY-MM-DD, not %q", date)}
+			return start, nil, nil, usageError{fmt.Sprintf("--date takes YYYY-MM-DD, not %q", date)}
 		}
 		start = d
 	}
 	dir, err := r.dataDir()
 	if err != nil {
-		return start, nil, err
+		return start, nil, nil, err
 	}
 	end := time.Date(start.Year(), start.Month(), start.Day()+1, 0, 0, 0, 0, start.Location())
 	events, problems, err := evidence.Log{Dir: dir}.Between(start.Add(-2*time.Hour), end.Add(2*time.Hour))
 	if err != nil {
-		return start, nil, err
+		return start, nil, nil, err
 	}
 	rs, more, err := evidence.Retags{Dir: dir}.All()
 	if err != nil {
-		return start, nil, err
+		return start, nil, nil, err
 	}
 	for _, p := range append(problems, more...) {
 		r.notes = append(r.notes, fmt.Sprintf("skipped %s line %d: %s", p.File, p.Line, p.Err))
+	}
+	if edit != nil {
+		rs = edit(rs)
 	}
 	// a confirmed day keeps deriving what was sent: a later retag passes it by
 	// (a broken decisions file is load's to report)
@@ -53,7 +58,7 @@ func (r *run) day(date string) (time.Time, []evidence.Event, error) {
 		}
 		rs = kept
 	}
-	return start, evidence.Apply(events, rs), nil
+	return start, evidence.Apply(events, rs), rs, nil
 }
 
 func inDay(start time.Time, at time.Time) bool {
@@ -66,7 +71,7 @@ func (r *run) events(args []string) (any, func(io.Writer), error) {
 	if err := r.flags(args, func(fs *flag.FlagSet) { fs.StringVar(&date, "date", "", "") }); err != nil {
 		return nil, nil, err
 	}
-	start, all, err := r.day(date)
+	start, all, _, err := r.day(date, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -123,6 +128,7 @@ type Loaded struct {
 	Config    Config
 	Store     draft.Store
 	Calendar  calendar.Day
+	Retags    []evidence.Retag // the retags applied, in the order made
 }
 
 // Draft is the CLI's view of a day's draft.
@@ -135,18 +141,21 @@ type Draft struct {
 }
 
 // load reads, derives and decides the day date ("" for today).
-func (r *run) load(date string) (Loaded, error) {
+func (r *run) load(date string) (Loaded, error) { return r.loadAs(date, nil) }
+
+// loadAs is load with day's edit to the retags.
+func (r *run) loadAs(date string, edit func([]evidence.Retag) []evidence.Retag) (Loaded, error) {
 	var l Loaded
 	cfg, err := r.config()
 	if err != nil {
 		return l, err
 	}
-	start, events, err := r.day(date)
+	start, events, rs, err := r.day(date, edit)
 	if err != nil {
 		return l, err
 	}
 	dir, _ := r.dataDir()
-	l = Loaded{Start: start, Config: cfg, Store: draft.Store{Dir: dir}}
+	l = Loaded{Start: start, Config: cfg, Store: draft.Store{Dir: dir}, Retags: rs}
 	var in []derive.Event
 	for _, e := range events {
 		k := ""

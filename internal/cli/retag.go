@@ -114,8 +114,8 @@ func (r *run) retagPrompt(dir string, in hookInput, e evidence.Event) string {
 // session, with the session named. Without --was, the time moved is that
 // of the ticket the session's latest prompt was logged to.
 func (r *run) retag(args []string) (any, func(io.Writer), error) {
-	var session, was, from, date string
-	var wasNone, list bool
+	var session, was, from, date, made string
+	var wasNone, list, undo bool
 	var pos []string
 	for len(args) > 0 { // flags may come after the key
 		if !strings.HasPrefix(args[0], "-") {
@@ -131,6 +131,8 @@ func (r *run) retag(args []string) (any, func(io.Writer), error) {
 		fs.StringVar(&from, "from", from, "")
 		fs.StringVar(&date, "date", date, "")
 		fs.BoolVar(&list, "list", list, "")
+		fs.BoolVar(&undo, "undo", undo, "")
+		fs.StringVar(&made, "at", made, "")
 		if err := fs.Parse(args); err != nil {
 			return nil, nil, usageError{err.Error()}
 		}
@@ -141,10 +143,25 @@ func (r *run) retag(args []string) (any, func(io.Writer), error) {
 		return nil, nil, err
 	}
 	if list {
-		if len(pos) > 0 || session != "" || was != "" || wasNone || from != "" || date != "" {
+		if len(pos) > 0 || session != "" || was != "" || wasNone || from != "" || date != "" || undo || made != "" {
 			return nil, nil, usageError{"--list takes nothing else"}
 		}
 		return r.listRetags(dir)
+	}
+	if undo {
+		t, err := time.Parse(time.RFC3339, made)
+		if len(pos) > 0 || session == "" || err != nil || was != "" || wasNone || from != "" || date != "" {
+			return nil, nil, usageError{"usage: sift retag --undo --session ID --at TIME, the time as sift retag --list --json gives it"}
+		}
+		if err := (evidence.Retags{Dir: dir}).Remove(session, t); err != nil {
+			return nil, nil, err
+		}
+		return map[string]any{"removed": true}, func(out io.Writer) {
+			fmt.Fprintf(out, "Took back session %s's retag of %s.\n", session, t.In(r.Now().Location()).Format("2006-01-02 15:04:05"))
+		}, nil
+	}
+	if made != "" {
+		return nil, nil, usageError{"--at names the retag --undo takes back; give --undo too"}
 	}
 	const use = "usage: sift retag KEY --session ID [--was KEY | --was-none] [--from HH:MM [--date YYYY-MM-DD]], or sift retag --list"
 	switch {

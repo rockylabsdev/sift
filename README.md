@@ -41,9 +41,9 @@ sift confirm           # accept a day: one worklog per ticket, sent
 sift log               # this week's worklogs
 ```
 
-In the review, `↑↓` selects a stretch, `t` assigns a meeting, gap or ticketless time to a ticket, `+ −` adjust a ticket by 5 minutes, `e` inspects a stretch (its events, where each ticket came from, and silences close to the idle gap), `c` confirms, `[ ]` change day and `T` changes theme (Graphite, Dusk, Paper).
+In the review, `↑↓` selects a stretch, `t` assigns a meeting, gap or ticketless time to a ticket, `r` moves one conversation's time in a stretch to another ticket (and, on time it moved, puts it back), `+ −` adjust a ticket by 5 minutes, `e` inspects a stretch (its events, where each ticket came from, and silences close to the idle gap), `c` confirms, `[ ]` change day and `T` changes theme (Graphite, Dusk, Paper).
 
-Started a conversation in an old worktree whose branch names the wrong ticket? Type `/sift retag PUN-160` in it, and that conversation's time on the old ticket counts for PUN-160, both what is logged and what comes after. `/sift retag PUN-160 from 9:45` moves only the time from then on. Other conversations, and helpers working on their own tickets, keep theirs. `sift retag --list` shows the retags made.
+Started a conversation in an old worktree whose branch names the wrong ticket? Press `r` on its stretch in the review, or type `/sift retag PUN-160` in it, and that conversation's time on the old ticket counts for PUN-160, both what is logged and what comes after. `/sift retag PUN-160 from 9:45` moves only the time from then on. Other conversations, and helpers working on their own tickets, keep theirs. `sift retag --list` shows the retags made.
 
 Work no collector saw: `sift block PUN-142 10:00-11:30`. In Claude Code, `/sift` shows the draft and confirms it with your yes. An agent cannot confirm a day on its own: `sift confirm` from an agent only proposes the draft, and the plugin puts `sift confirm --yes` to you.
 

@@ -33,6 +33,9 @@ type fake struct {
 	now       time.Time
 	refreshes int
 	fail      error
+	retags    []evidence.Retag
+	saves     int
+	recent    []string
 }
 
 func key(s string) *string { return &s }
@@ -60,13 +63,43 @@ func newFake() *fake {
 	return f
 }
 
-func (f *fake) Load(day time.Time) (Input, error) {
+func (f *fake) Load(day time.Time) (Input, error) { return f.loadWith(day, f.retags) }
+
+func (f *fake) Preview(day time.Time, c RetagChange) (Input, error) {
+	return f.loadWith(day, f.after(c))
+}
+
+func (f *fake) Retag(c RetagChange) error {
+	if !c.Undo {
+		f.saves++
+		c.Retag.At = hm(20, f.saves)
+	}
+	f.retags = f.after(c)
+	return nil
+}
+
+func (f *fake) after(c RetagChange) []evidence.Retag {
+	var out []evidence.Retag
+	for _, rt := range f.retags {
+		if !c.Undo || rt.Session != c.Retag.Session || !rt.At.Equal(c.Retag.At) {
+			out = append(out, rt)
+		}
+	}
+	if !c.Undo {
+		out = append(out, c.Retag)
+	}
+	return out
+}
+
+func (f *fake) Recent(time.Time) []string { return f.recent }
+
+func (f *fake) loadWith(day time.Time, rs []evidence.Retag) (Input, error) {
 	if f.fail != nil {
 		return Input{}, f.fail
 	}
 	var in []derive.Event
 	var mine []evidence.Event
-	for _, e := range f.events {
+	for _, e := range evidence.Apply(f.events, rs) {
 		t := ""
 		if e.Ticket != nil {
 			t = *e.Ticket
@@ -84,7 +117,7 @@ func (f *fake) Load(day time.Time) (Input, error) {
 	set := derive.Defaults
 	set.Until = f.now
 	return Input{Start: day, Events: mine, Day: derive.For(day, in, ms, set), Decisions: d,
-		IdleGap: 10, Meetings: "calendar: test", Today: day0.AddDate(0, 0, 2), Tracker: "Jira", Sent: f.sent, Now: f.now}, nil
+		IdleGap: 10, Meetings: "calendar: test", Today: day0.AddDate(0, 0, 2), Tracker: "Jira", Sent: f.sent, Now: f.now, Retags: rs}, nil
 }
 
 func (f *fake) Update(day time.Time, change func(*draft.Decisions) error) error {
@@ -121,6 +154,16 @@ func press(m Model, keys ...string) Model {
 			msg = tea.KeyPressMsg{Code: tea.KeyDown}
 		case "esc":
 			msg = tea.KeyPressMsg{Code: tea.KeyEscape}
+		case "up":
+			msg = tea.KeyPressMsg{Code: tea.KeyUp}
+		case "tab":
+			msg = tea.KeyPressMsg{Code: tea.KeyTab}
+		case "enter":
+			msg = tea.KeyPressMsg{Code: tea.KeyEnter}
+		case "backspace":
+			msg = tea.KeyPressMsg{Code: tea.KeyBackspace}
+		case "ctrl+f":
+			msg = tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl}
 		default:
 			msg = tea.KeyPressMsg{Code: []rune(k)[0], Text: k}
 		}

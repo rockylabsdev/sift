@@ -2,9 +2,14 @@ package cli
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rockylabsdev/sift/internal/draft"
+	"github.com/rockylabsdev/sift/internal/evidence"
+	"github.com/rockylabsdev/sift/internal/tui"
 )
 
 // say types a prompt in a session at hh:mm and returns what the hook
@@ -168,5 +173,88 @@ func TestRetagCommand(t *testing.T) {
 		if code, e, _ := h.envelope(args...); code != 64 || e.Outcome != "usage" {
 			t.Errorf("%v: exit %d %+v", args, code, e)
 		}
+	}
+}
+
+func TestTheReviewPreviewsSavesAndTakesBackARetag(t *testing.T) {
+	h := newHarness(t)
+	h.say(9, 0, "s1", h.repo, "start")
+	h.say(9, 20, "s1", h.repo, "more")
+	h.say(11, 0, "s2", h.repo, "another conversation")
+	other := h.worktree("ops", "feature/OPS-9-certs")
+	h.say(8, 0, "s3", other, "earlier, elsewhere")
+	h.now = time.Date(2026, 11, 10, 12, 0, 0, 0, time.Local)
+	s := source{&run{Env: Env{Getenv: func(k string) string { return h.env[k] }, Now: func() time.Time { return h.now }}}}
+	day := time.Date(2026, 11, 10, 0, 0, 0, 0, time.Local)
+	minutes := func(in tui.Input, err error) map[string]int {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]int{}
+		for _, w := range draft.Of(in.Day, in.Decisions, in.Round).Worklogs {
+			got[w.Ticket] = w.Minutes
+		}
+		return got
+	}
+	retags := func() int {
+		rs, _, _ := evidence.Retags{Dir: filepath.Join(h.env["XDG_DATA_HOME"], "sift")}.All()
+		return len(rs)
+	}
+	before := minutes(s.Load(day))
+	c := tui.RetagChange{Retag: evidence.Retag{Session: "s1", Was: "PUN-142", Ticket: "PUN-160"}}
+	preview := minutes(s.Preview(day, c))
+	if preview["PUN-160"] != 10 || preview["PUN-142"] != before["PUN-142"]-10 || retags() != 0 {
+		t.Fatalf("before %v, preview %v, %d retags saved; want s1's 10m on PUN-160 and nothing saved", before, preview, retags())
+	}
+	if again := minutes(s.Load(day)); again["PUN-160"] != 0 {
+		t.Fatalf("a preview leaked into the next load: %v", again)
+	}
+	if err := s.Retag(c); err != nil {
+		t.Fatal(err)
+	}
+	in, err := s.Load(day)
+	if saved := minutes(in, err); saved["PUN-160"] != preview["PUN-160"] || saved["PUN-142"] != preview["PUN-142"] {
+		t.Fatalf("saved %v, previewed %v", saved, preview)
+	}
+	if len(in.Retags) != 1 || in.Retags[0].Session != "s1" || !in.Retags[0].At.Equal(h.now) {
+		t.Fatalf("the day's retags %+v", in.Retags)
+	}
+	if err := s.Retag(tui.RetagChange{Retag: evidence.Retag{Session: "s1", Was: "PUN-160", Ticket: "PUN-160"}}); err == nil {
+		t.Fatal("a retag onto the ticket it moves from saved")
+	}
+	undo := tui.RetagChange{Retag: in.Retags[0], Undo: true}
+	if back := minutes(s.Preview(day, undo)); back["PUN-142"] != before["PUN-142"] || back["PUN-160"] != 0 || retags() != 1 {
+		t.Fatalf("undo previews %v, %d retags; want %v and the retag still saved", back, retags(), before)
+	}
+	if err := s.Retag(undo); err != nil {
+		t.Fatal(err)
+	}
+	if after := minutes(s.Load(day)); after["PUN-142"] != before["PUN-142"] || retags() != 0 {
+		t.Fatalf("after undo %v with %d retags, want %v", after, retags(), before)
+	}
+	s.Retag(c)
+	if got := strings.Join(s.Recent(day), ","); got != "PUN-160,PUN-142,OPS-9" {
+		t.Fatalf("recent %q; want the retag's ticket, then the prompts' newest first", got)
+	}
+}
+
+func TestRetagUndo(t *testing.T) {
+	h := newHarness(t)
+	h.say(9, 0, "s1", h.repo, "start")
+	h.say(9, 5, "s1", h.repo, "/sift retag PUN-160")
+	_, _, data := h.envelope("retag", "--list")
+	at := data["retags"].([]any)[0].(map[string]any)["at"].(string)
+	if code, e, _ := h.envelope("retag", "--undo", "--session", "s1"); code != 64 || e.Outcome != "usage" {
+		t.Fatalf("--undo without --at: exit %d %+v", code, e)
+	}
+	if code, out, _ := h.run("", "retag", "--undo", "--session", "s1", "--at", at); code != 0 || !strings.Contains(out, "Took back session s1's retag") {
+		t.Fatalf("exit %d %q", code, out)
+	}
+	if got := h.minutes(); got["PUN-142"] != 10 || got["PUN-160"] != 0 {
+		t.Fatalf("%v; want s1's time back on PUN-142", got)
+	}
+	if code, _, _ := h.run("", "retag", "--undo", "--session", "s1", "--at", at); code == 0 {
+		t.Fatal("taking back a retag twice says nothing")
 	}
 }

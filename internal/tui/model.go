@@ -28,6 +28,7 @@ type Input struct {
 	Tracker   string            // where confirmed worklogs go: "Jira", or "" for the local log
 	Sent      map[string]Status // a confirmed day's worklogs, by ticket, as the outbox has them
 	Now       time.Time         // the clock when the day was loaded; zero means not live
+	Retags    []evidence.Retag  // the retags read into this day's sessions, in the order made
 }
 
 // Status is where one confirmed worklog stands.
@@ -47,6 +48,18 @@ type Source interface {
 	// Refresh brings day's slow sources, such as the calendar, up to date.
 	// It runs off the UI goroutine, concurrently with Load.
 	Refresh(day time.Time)
+	// Preview loads day as it would be after c, and saves nothing.
+	Preview(day time.Time, c RetagChange) (Input, error)
+	// Retag saves c.
+	Retag(c RetagChange) error
+	// Recent lists the tickets seen in the two weeks up to day, newest first.
+	Recent(day time.Time) []string
+}
+
+// RetagChange is a retag to make, or, with Undo, one to take back.
+type RetagChange struct {
+	Retag evidence.Retag
+	Undo  bool
 }
 
 // refresh is how often the screen reloads the day it shows.
@@ -73,8 +86,17 @@ type Model struct {
 	w, h    int
 	msg     string
 	err     error
-	asking  bool // waiting for y to confirm the day
+	mode    mode // the question the keys answer; nil while browsing the day
 }
+
+// mode is a question in progress. Each one owns its keys, its footer and
+// the state it needs; the live refresh waits until none is open.
+type mode interface{ isMode() }
+
+// confirming waits for y to confirm the day.
+type confirming struct{}
+
+func (confirming) isMode() {}
 
 // New opens the review on day.
 func New(src Source, day time.Time, theme string) Model {
@@ -218,7 +240,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		src, day := m.src, m.in.Start
 		return m, func() tea.Msg { src.Refresh(day); return refreshed{} }
 	case refreshed:
-		if !m.asking {
+		if m.mode == nil {
 			m.load(m.in.Start)
 		}
 		return m, next()
@@ -226,96 +248,110 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.w, m.h = k.Width, k.Height
 	case tea.KeyPressMsg:
 		m.msg = ""
-		if m.asking {
-			m.asking = false
-			if k.String() == "y" {
-				msg, err := m.src.Confirm(m.in.Start)
-				m.msg = msg
-				if err != nil {
-					m.msg = err.Error()
-				}
-				m.load(m.in.Start)
-			} else {
-				m.msg = "Not confirmed."
-			}
-			return m, nil
-		}
-		s, ok := m.selected()
-		switch k.String() {
-		case "c":
-			switch {
-			case m.dr.Confirmed:
-				m.msg = "Already confirmed."
-			case len(m.dr.Sendable()) == 0:
-				m.msg = "Nothing to confirm on this day."
-			default:
-				m.asking = true
-			}
-		case "q", "ctrl+c":
+		if k.String() == "ctrl+c" {
 			return m, tea.Quit
-		case "up", "k":
-			m.cur = max(m.cur-1, 0)
-		case "down", "j":
-			m.cur = min(m.cur+1, max(len(m.stretches())-1, 0))
-		case "e":
-			m.inspect = (m.inspect + 1) % 3
-		case "esc":
-			m.inspect = 0
-		case "T":
-			m.theme = (m.theme + 1) % len(Themes)
-		case "[", "left", "h":
-			m.cur = 0
-			m.load(m.in.Start.AddDate(0, 0, -1))
-		case "]", "right", "l":
-			m.cur = 0
-			m.load(m.in.Start.AddDate(0, 0, 1))
-		case "t", "enter":
-			if _, can := draft.Assignable(s); ok && can {
-				id, opts := draft.ID(s), m.options(s)
-				cur := m.in.Decisions.Assign[id]
-				next := opts[0]
-				for i, o := range opts {
-					if o == cur {
-						next = opts[(i+1)%len(opts)]
-					}
-				}
-				m.change(func(d *draft.Decisions) error {
-					if d.Assign == nil {
-						d.Assign = map[string]string{}
-					}
-					if next == "" {
-						delete(d.Assign, id)
-					} else {
-						d.Assign[id] = next
-					}
-					return nil
-				})
-			} else if ok {
-				m.msg = "Only meetings, gaps and ticketless time can be assigned."
-			}
-		case "+", "=", "-":
-			t := m.target(s)
-			if !ok || t == "" {
-				m.msg = "Select a stretch with a ticket to adjust it."
+		}
+		switch m.mode.(type) {
+		case nil:
+			return m.browse(k)
+		case confirming:
+			m.mode = nil
+			if k.String() != "y" {
+				m.msg = "Not confirmed."
 				break
 			}
-			w := m.worklog(t)
-			base := w.Counted + w.Assigned
+			msg, err := m.src.Confirm(m.in.Start)
+			m.msg = msg
+			if err != nil {
+				m.msg = err.Error()
+			}
+			m.load(m.in.Start)
+		default:
+			return m.answerRetag(k), nil
+		}
+	}
+	return m, nil
+}
+
+// browse answers a key while no question is open.
+func (m Model) browse(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	s, ok := m.selected()
+	switch k.String() {
+	case "c":
+		switch {
+		case m.dr.Confirmed:
+			m.msg = "Already confirmed."
+		case len(m.dr.Sendable()) == 0:
+			m.msg = "Nothing to confirm on this day."
+		default:
+			m.mode = confirming{}
+		}
+	case "q":
+		return m, tea.Quit
+	case "r":
+		return m.startRetag(), nil
+	case "up", "k":
+		m.cur = max(m.cur-1, 0)
+	case "down", "j":
+		m.cur = min(m.cur+1, max(len(m.stretches())-1, 0))
+	case "e":
+		m.inspect = (m.inspect + 1) % 3
+	case "esc":
+		m.inspect = 0
+	case "T":
+		m.theme = (m.theme + 1) % len(Themes)
+	case "[", "left", "h":
+		m.cur = 0
+		m.load(m.in.Start.AddDate(0, 0, -1))
+	case "]", "right", "l":
+		m.cur = 0
+		m.load(m.in.Start.AddDate(0, 0, 1))
+	case "t", "enter":
+		if _, can := draft.Assignable(s); ok && can {
+			id, opts := draft.ID(s), m.options(s)
+			cur := m.in.Decisions.Assign[id]
+			next := opts[0]
+			for i, o := range opts {
+				if o == cur {
+					next = opts[(i+1)%len(opts)]
+				}
+			}
 			m.change(func(d *draft.Decisions) error {
-				if d.Adjust == nil {
-					d.Adjust = map[string]int{}
+				if d.Assign == nil {
+					d.Assign = map[string]string{}
 				}
-				if k.String() == "-" {
-					d.Adjust[t] = max(d.Adjust[t]-5, -base)
+				if next == "" {
+					delete(d.Assign, id)
 				} else {
-					d.Adjust[t] += 5
-				}
-				if d.Adjust[t] == 0 {
-					delete(d.Adjust, t)
+					d.Assign[id] = next
 				}
 				return nil
 			})
+		} else if ok {
+			m.msg = "Only meetings, gaps and ticketless time can be assigned."
 		}
+	case "+", "=", "-":
+		t := m.target(s)
+		if !ok || t == "" {
+			m.msg = "Select a stretch with a ticket to adjust it."
+			break
+		}
+		w := m.worklog(t)
+		base := w.Counted + w.Assigned
+		m.change(func(d *draft.Decisions) error {
+			if d.Adjust == nil {
+				d.Adjust = map[string]int{}
+			}
+			if k.String() == "-" {
+				d.Adjust[t] = max(d.Adjust[t]-5, -base)
+			} else {
+				d.Adjust[t] += 5
+			}
+			if d.Adjust[t] == 0 {
+				delete(d.Adjust, t)
+			}
+			return nil
+		})
 	}
 	return m, nil
 }
