@@ -18,6 +18,7 @@ type hookInput struct {
 	Session    string `json:"session_id"`
 	AgentID    string `json:"agent_id"`
 	DurationMs int64  `json:"duration_ms"`
+	Prompt     string `json:"prompt"`
 }
 
 // agentKinds maps the hooks that report an agent's activity to the event
@@ -38,9 +39,9 @@ func (r *run) origin() evidence.Origin {
 }
 
 // record appends one event. With --hook it reads Claude Code's hook input
-// from stdin, records the user's prompt, and always exits 0 with nothing
-// on stdout: a hook's stdout would be added to the prompt, and a failed
-// record must never stop the user typing.
+// from stdin, records the user's prompt, and always exits 0: a failed
+// record must never stop the user typing. Its stdout is added to the
+// prompt, so it stays empty except to answer /sift retag.
 func (r *run) record(args []string) (any, func(io.Writer), error) {
 	var cwd, source, kind, origin string
 	var hook bool
@@ -62,10 +63,15 @@ func (r *run) record(args []string) (any, func(io.Writer), error) {
 			fmt.Fprintln(r.Stderr, "sift: reading the hook input:", err)
 			return nil, nil, nil
 		}
-		if err := r.recordHook(in); err != nil {
+		reply, err := r.recordHook(in)
+		if err != nil {
 			fmt.Fprintln(r.Stderr, "sift:", err)
 		}
-		return nil, nil, nil
+		if reply == "" {
+			return nil, nil, nil
+		}
+		out := map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "UserPromptSubmit", "additionalContext": reply}}
+		return nil, func(w io.Writer) { json.NewEncoder(w).Encode(out) }, nil
 	}
 	if err != nil {
 		return nil, nil, err
@@ -123,11 +129,12 @@ func (r *run) projects() []string {
 // agent's activity. An agent's ticket is its directory's own (a .sift
 // file, or a branch that names a key), else the ticket of the user's
 // latest prompt in the same session: subagents run in worktrees whose
-// branches rarely name one.
-func (r *run) recordHook(in hookInput) error {
+// branches rarely name one. A /sift retag prompt is recorded too, and its
+// reply is the context to give Claude.
+func (r *run) recordHook(in hookInput) (string, error) {
 	dir, err := r.dataDir()
 	if err != nil {
-		return err
+		return "", err
 	}
 	sessions := evidence.Sessions{Dir: dir}
 	now := r.Now()
@@ -143,7 +150,10 @@ func (r *run) recordHook(in hookInput) error {
 				fmt.Fprintln(r.Stderr, "sift:", err)
 			}
 		}
-		return evidence.Log{Dir: dir}.Append(e)
+		if err := (evidence.Log{Dir: dir}).Append(e); err != nil {
+			return "", err
+		}
+		return r.retagPrompt(dir, in, e), nil
 	}
 	e.Kind, e.Origin, e.AgentID = kind, evidence.Agent, in.AgentID
 	if in.Event == "PostToolUse" && in.DurationMs > 0 {
@@ -159,7 +169,7 @@ func (r *run) recordHook(in hookInput) error {
 	// at most one a minute per session and ticket, but never drop a long
 	// run: its span is time the deriver counts
 	if e.SpanMs < 60_000 && !sessions.Due(in.Session, t, now) {
-		return nil
+		return "", nil
 	}
-	return evidence.Log{Dir: dir}.Append(e)
+	return "", evidence.Log{Dir: dir}.Append(e)
 }
