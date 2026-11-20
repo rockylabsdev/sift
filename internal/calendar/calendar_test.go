@@ -35,11 +35,11 @@ func parse(t *testing.T, fixture, day string) ([]Meeting, []Skipped) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, s, err := Parse(ics, owner, at(day, "12:00"))
+	f, err := Parse(ics, owner, berlin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return m, s
+	return f.Day(at(day, "12:00"))
 }
 
 func same(t *testing.T, what string, got, want any) {
@@ -136,7 +136,7 @@ func TestMidnightIsClipped(t *testing.T) {
 
 func TestNotICalendar(t *testing.T) {
 	for _, body := range []string{"", "<html>sign in</html>"} {
-		if _, _, err := Parse([]byte(body), owner, at("2026-11-10", "12:00")); err == nil {
+		if _, err := Parse([]byte(body), owner, berlin); err == nil {
 			t.Errorf("Parse(%q) gave no error", body)
 		}
 	}

@@ -1,4 +1,4 @@
-// Package calendar reads the user's iCalendar subscription and turns one
+// Package calendar reads the user's iCalendar subscription and turns each
 // day of it into meetings, plus the events it left out and why.
 package calendar
 
@@ -59,26 +59,25 @@ type event struct {
 // that can land on the day.
 const widest = 14 * time.Hour
 
-// Parse reads an iCalendar feed and returns the occurrences that overlap
-// the local calendar day containing day, in day's Location, clipped to
-// it. Floating times and DATE values are read in day's Location. owner is
-// the user's email address. The error is set only when the feed is not
-// iCalendar; an event that cannot be read is Skipped as Unreadable.
-func Parse(ics []byte, owner string, day time.Time) ([]Meeting, []Skipped, error) {
-	y, m, d := day.Date()
-	loc := day.Location()
-	from := time.Date(y, m, d, 0, 0, 0, 0, loc)
-	to := time.Date(y, m, d+1, 0, 0, 0, 0, loc)
+// Feed is a calendar feed, read once, that gives any day's meetings.
+type Feed struct {
+	events     []*event
+	unreadable []Skipped
+	// At is when the feed was fetched.
+	At time.Time
+}
 
+// Parse reads an iCalendar feed. Floating times and DATE values are read
+// in loc. owner is the user's email address. The error is set only when
+// the feed is not iCalendar; an event that cannot be read is Skipped as
+// Unreadable on every day.
+func Parse(ics []byte, owner string, loc *time.Location) (*Feed, error) {
 	comps, err := decode(ics)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	z := newZones(comps, loc)
-
-	var meetings []Meeting
-	var skipped []Skipped
-	var events []*event
+	f := &Feed{}
 	masters := map[string]*event{}
 	for _, c := range comps {
 		if c.Name != ical.CompEvent {
@@ -88,21 +87,33 @@ func Parse(ics []byte, owner string, day time.Time) ([]Meeting, []Skipped, error
 		if err != nil {
 			uid, _ := c.Props.Text(ical.PropUID)
 			title, _ := c.Props.Text(ical.PropSummary)
-			skipped = append(skipped, Skipped{Meeting{UID: uid, Title: title}, Unreadable, err.Error()})
+			f.unreadable = append(f.unreadable, Skipped{Meeting{UID: uid, Title: title}, Unreadable, err.Error()})
 			continue
 		}
-		events = append(events, e)
+		f.events = append(f.events, e)
 		if e.recurrence == nil {
 			masters[e.uid] = e
 		}
 	}
-	for _, e := range events {
+	for _, e := range f.events {
 		if master := masters[e.uid]; e.recurrence != nil && master != nil {
 			master.excluded[e.recurrence.Unix()] = true
 		}
 	}
+	return f, nil
+}
 
-	for _, e := range events {
+// Day returns the occurrences that overlap the local calendar day
+// containing day, in day's Location, clipped to it.
+func (f *Feed) Day(day time.Time) ([]Meeting, []Skipped) {
+	y, m, d := day.Date()
+	loc := day.Location()
+	from := time.Date(y, m, d, 0, 0, 0, 0, loc)
+	to := time.Date(y, m, d+1, 0, 0, 0, 0, loc)
+
+	var meetings []Meeting
+	skipped := append([]Skipped(nil), f.unreadable...)
+	for _, e := range f.events {
 		for _, s := range e.occurrences(from.UTC().Add(-e.length-widest), to.UTC().Add(widest)) {
 			end := s.Add(e.length)
 			if !s.Before(to) || !end.After(from) {
@@ -118,7 +129,7 @@ func Parse(ics []byte, owner string, day time.Time) ([]Meeting, []Skipped, error
 	}
 	sort.SliceStable(meetings, func(i, j int) bool { return less(meetings[i], meetings[j]) })
 	sort.SliceStable(skipped, func(i, j int) bool { return less(skipped[i].Meeting, skipped[j].Meeting) })
-	return meetings, skipped, nil
+	return meetings, skipped
 }
 
 // occurrences are the event's start instants whose wall times fall in [lo, hi].

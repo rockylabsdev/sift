@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -251,19 +252,31 @@ func TestTodayCountsNothingAfterNow(t *testing.T) {
 	}
 }
 
+// feedOf is a feed of n half-hour meetings with a colleague on day, from 08:00.
+func feedOf(t *testing.T, n int, day time.Time) *calendar.Feed {
+	t.Helper()
+	ics := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"
+	for i := 0; i < n; i++ {
+		from := day.Add(time.Duration(8+i) * time.Hour)
+		ics += fmt.Sprintf("BEGIN:VEVENT\r\nUID:sync-%d\r\nSUMMARY:sync\r\nDTSTART:%s\r\nDTEND:%s\r\nORGANIZER:mailto:pal@example.com\r\nEND:VEVENT\r\n",
+			i, from.Format("20060102T150405"), from.Add(30*time.Minute).Format("20060102T150405"))
+	}
+	f, err := calendar.Parse([]byte(ics+"END:VCALENDAR\r\n"), "me@example.com", day.Location())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
 func TestTheReviewRefetchesTodaysCalendarEveryFiveMinutes(t *testing.T) {
 	h := newHarness(t)
 	h.now = time.Date(2026, 11, 10, 9, 0, 0, 0, time.Local)
 	today, yesterday := time.Date(2026, 11, 10, 0, 0, 0, 0, time.Local), time.Date(2026, 11, 9, 0, 0, 0, 0, time.Local)
 	fetches := 0
 	r := &run{Env: Env{Getenv: func(k string) string { return h.env[k] }, Now: func() time.Time { return h.now }}, withCalendar: true}
-	r.fetch = func(_ Config, day time.Time) calendar.Day {
+	r.fetch = func(Config) (*calendar.Feed, error) {
 		fetches++
-		d := calendar.Day{Source: calendar.Fetched}
-		for i := 0; i < fetches; i++ {
-			d.Meetings = append(d.Meetings, calendar.Meeting{From: day.Add(time.Duration(8+i) * time.Hour), To: day.Add(time.Duration(8+i)*time.Hour + 30*time.Minute), Title: "sync"})
-		}
-		return d
+		return feedOf(t, fetches, today), nil
 	}
 	s := source{r}
 	meetings := func(day time.Time) string {
@@ -274,8 +287,12 @@ func TestTheReviewRefetchesTodaysCalendarEveryFiveMinutes(t *testing.T) {
 		}
 		return in.Meetings
 	}
+	if got := meetings(today); fetches != 0 || got != "calendar: loading" {
+		t.Fatalf("the first load fetched %d times and says %q; want no fetch, and loading", fetches, got)
+	}
+	s.Refresh(today)
 	if got := meetings(today); fetches != 1 || got != "calendar: 1 meeting" {
-		t.Fatalf("the first load fetched %d times and says %q", fetches, got)
+		t.Fatalf("after the first refresh, %d fetches and %q", fetches, got)
 	}
 	h.now = h.now.Add(4 * time.Minute)
 	s.Refresh(today)
@@ -292,11 +309,13 @@ func TestTheReviewRefetchesTodaysCalendarEveryFiveMinutes(t *testing.T) {
 	if got := meetings(today); fetches != 2 || got != "calendar: 2 meetings" {
 		t.Fatalf("five minutes on, %d fetches and %q; want a second fetch and its new meeting", fetches, got)
 	}
-	meetings(yesterday)
+	if got := meetings(yesterday); got != "calendar: 0 meetings" {
+		t.Fatalf("yesterday says %q", got)
+	}
 	h.now = h.now.Add(time.Hour)
 	s.Refresh(yesterday)
-	if fetches != 3 {
-		t.Fatalf("%d fetches; a past day is fetched once, when it loads, and never refreshed", fetches)
+	if fetches != 2 {
+		t.Fatalf("%d fetches; a past day reads the run's feed and never refetches it", fetches)
 	}
 }
 
@@ -308,14 +327,15 @@ func TestTheReviewFetchesTheFeedOnceAndNeverOnTheUIGoroutine(t *testing.T) {
 	fetches := 0
 	release := make(chan struct{})
 	r := &run{Env: Env{Getenv: func(k string) string { return h.env[k] }, Now: func() time.Time { return h.now }}, withCalendar: true}
-	r.fetch = func(_ Config, day time.Time) calendar.Day {
+	r.fetch = func(Config) (*calendar.Feed, error) {
 		mu.Lock()
 		fetches++
 		mu.Unlock()
 		<-release
-		return calendar.Day{Source: calendar.Fetched, Meetings: []calendar.Meeting{{From: day.Add(8 * time.Hour), To: day.Add(8*time.Hour + 30*time.Minute), Title: "sync"}}}
+		return feedOf(t, 1, today.AddDate(0, 0, -2)), nil
 	}
 	s := source{r}
+	go s.Refresh(today)
 	for i := 0; i < 3; i++ {
 		loaded := make(chan string, 1)
 		go func(day time.Time) {
@@ -323,7 +343,10 @@ func TestTheReviewFetchesTheFeedOnceAndNeverOnTheUIGoroutine(t *testing.T) {
 			loaded <- in.Meetings
 		}(today.AddDate(0, 0, -i))
 		select {
-		case <-loaded:
+		case got := <-loaded:
+			if got != "calendar: loading" {
+				t.Errorf("day -%d says %q while the feed downloads", i, got)
+			}
 		case <-time.After(2 * time.Second):
 			close(release)
 			t.Fatalf("loading day -%d waited for the calendar download", i)
@@ -336,7 +359,7 @@ func TestTheReviewFetchesTheFeedOnceAndNeverOnTheUIGoroutine(t *testing.T) {
 	if fetches != 1 {
 		t.Fatalf("three days downloaded the feed %d times; want once per run", fetches)
 	}
-	if in, _ := s.Load(today.AddDate(0, 0, -2)); in.Meetings != "calendar: 1 meeting" {
-		t.Fatalf("after the fetch, two days back says %q", in.Meetings)
+	if in, _ := s.Load(today.AddDate(0, 0, -2)); in.Meetings != "calendar: 1 meeting" || in.Pending {
+		t.Fatalf("after the fetch, two days back says %q, pending %v", in.Meetings, in.Pending)
 	}
 }

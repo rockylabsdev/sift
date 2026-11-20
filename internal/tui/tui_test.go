@@ -32,6 +32,7 @@ type fake struct {
 	sent      map[string]Status
 	now       time.Time
 	refreshes int
+	pending   bool // the calendar has not arrived; Refresh brings it
 	fail      error
 	retags    []evidence.Retag
 	saves     int
@@ -110,14 +111,14 @@ func (f *fake) loadWith(day time.Time, rs []evidence.Retag) (Input, error) {
 		}
 	}
 	var ms []derive.Meeting
-	if day.Equal(day0) {
+	if day.Equal(day0) && !f.pending {
 		ms = f.meetings
 	}
 	d := f.dec[day.Format("2006-01-02")]
 	set := derive.Defaults
 	set.Until = f.now
 	return Input{Start: day, Events: mine, Day: derive.For(day, in, ms, set), Decisions: d,
-		IdleGap: 10, Meetings: "calendar: test", Today: day0.AddDate(0, 0, 2), Tracker: "Jira", Sent: f.sent, Now: f.now, Retags: rs}, nil
+		IdleGap: 10, Meetings: "calendar: test", Pending: f.pending, Today: day0.AddDate(0, 0, 2), Tracker: "Jira", Sent: f.sent, Now: f.now, Retags: rs}, nil
 }
 
 func (f *fake) Update(day time.Time, change func(*draft.Decisions) error) error {
@@ -135,7 +136,7 @@ func (f *fake) Update(day time.Time, change func(*draft.Decisions) error) error 
 
 func (f *fake) Tracker() string { return "Jira" }
 
-func (f *fake) Refresh(time.Time) { f.refreshes++ }
+func (f *fake) Refresh(time.Time) { f.refreshes++; f.pending = false }
 
 func (f *fake) Confirm(day time.Time) (string, error) {
 	in, _ := f.Load(day)
@@ -510,5 +511,42 @@ func TestAFailedReloadSaysSoAndKeepsTheDay(t *testing.T) {
 		if got := last(ticked(m)); strings.Contains(got, "could not load") || !strings.Contains(got, "calendar: test") {
 			t.Fatalf("after a good reload the status line is %q", got)
 		}
+	}
+}
+
+func TestAPendingCalendarArrivesOffTheUIGoroutine(t *testing.T) {
+	f := newFake()
+	f.pending = true
+	m := sized(New(f, day0, ""), 120, 36)
+	if strings.Contains(frame(m), "PUN-142 standup") {
+		t.Fatalf("the standup shows before the calendar arrived")
+	}
+	if fr := frame(press(m, "c")); !strings.Contains(fr, "The calendar is still loading.") {
+		t.Fatalf("c while the calendar loads did not refuse:\n%s", fr)
+	}
+	cmd := m.awaitCalendar()
+	if cmd == nil || f.refreshes != 0 {
+		t.Fatalf("a pending day must fetch in a command, not while it loads")
+	}
+	m2, _ := m.Update(cmd())
+	if fr := frame(m2.(Model)); !strings.Contains(fr, "PUN-142 standup") || f.refreshes != 1 {
+		t.Fatalf("after the calendar arrived the standup is missing:\n%s", fr)
+	}
+	if m2.(Model).awaitCalendar() != nil {
+		t.Fatalf("a day with its calendar fetched it again")
+	}
+}
+
+func TestChangingDayFetchesAPendingCalendar(t *testing.T) {
+	f := newFake()
+	m := sized(New(f, day0.AddDate(0, 0, 1), ""), 120, 36)
+	f.pending = true
+	m1, cmd := m.Update(tea.KeyPressMsg{Code: '['})
+	if cmd == nil || f.refreshes != 0 {
+		t.Fatalf("[ onto a pending day gave no command, or fetched on the UI goroutine")
+	}
+	m2, _ := m1.Update(cmd())
+	if fr := frame(m2.(Model)); !strings.Contains(fr, "PUN-142 standup") {
+		t.Fatalf("the day's standup is missing once the calendar arrived:\n%s", fr)
 	}
 }

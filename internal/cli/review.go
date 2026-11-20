@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/rockylabsdev/sift/internal/calendar"
 	"github.com/rockylabsdev/sift/internal/draft"
 	"github.com/rockylabsdev/sift/internal/evidence"
 	"github.com/rockylabsdev/sift/internal/tui"
@@ -100,13 +101,13 @@ func (s source) Recent(day time.Time) []string {
 }
 
 func (s source) loadAs(day time.Time, edit func([]evidence.Retag) []evidence.Retag) (tui.Input, error) {
-	l, err := s.r.loadAs(day.Format("2006-01-02"), edit)
+	l, err := s.r.loadAs(day.Format("2006-01-02"), edit, false)
 	if err != nil {
 		return tui.Input{}, err
 	}
 	now := s.r.Now()
 	in := tui.Input{Start: l.Start, Events: l.Events, Day: l.Day, Decisions: l.Decisions,
-		Round: l.Config.Round, IdleGap: l.Config.IdleGap, Meetings: s.note(l),
+		Round: l.Config.Round, IdleGap: l.Config.IdleGap, Meetings: s.note(l), Pending: l.Calendar.Source == calendar.Pending,
 		Today: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()), Tracker: s.Tracker(), Now: now}
 	sessions := map[string]bool{}
 	for _, e := range l.Events {

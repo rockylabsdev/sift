@@ -68,9 +68,11 @@ type run struct {
 
 	withCalendar bool                                 // fetch meetings when loading a day
 	demoMeetings func(day time.Time) []derive.Meeting // the demo's fixed meetings
-	fetch        func(Config, time.Time) calendar.Day // reads a day's calendar: fetchMeetings, or a test's feed
-	calMu        sync.Mutex                           // the review refreshes calendars off its UI goroutine
-	calendars    map[string]fetched                   // this run's calendar days, by date
+	fetch        func(Config) (*calendar.Feed, error) // downloads the feed: fetchFeed, or a test's
+	fetchMu      sync.Mutex                           // one download at a time
+	calMu        sync.Mutex                           // guards feed and calendars; the review downloads off its UI goroutine
+	feed         *download                            // this run's latest download; nil before the first ends
+	calendars    map[string]calendar.Day              // days read from feed, by date
 }
 
 type usageError struct{ msg string }
@@ -104,7 +106,7 @@ const usage = `sift: a terminal worklog drafter
 // Run runs sift with args and returns the exit code.
 func Run(args []string, env Env) int {
 	r := &run{Env: env, json: env.Getenv("SIFT_JSON") == "1", withCalendar: true}
-	r.fetch = r.fetchMeetings
+	r.fetch = r.fetchFeed
 	if len(args) == 0 {
 		args = []string{"review"}
 	}

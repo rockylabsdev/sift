@@ -55,79 +55,111 @@ func (r *run) client(cfg Config) (c tracker.Client, none bool, err error) {
 	return jira.New(cfg.Jira.Site, cfg.Jira.Email, token, nil), false, nil
 }
 
-// calendarEvery is how often the review refetches today's calendar, so a
-// meeting added after it opened still appears.
+// calendarEvery is how often the review refetches the calendar while it
+// shows today, or after a fetch failed, so a meeting added after it
+// opened still appears.
 const calendarEvery = 5 * time.Minute
 
-// fetched is a day's calendar and when sift last tried to fetch it.
-type fetched struct {
-	day calendar.Day
-	at  time.Time
+// errNoCalendar is the download when no calendar is connected.
+var errNoCalendar = errors.New("no calendar connected")
+
+// download is one fetch of the feed: the feed, or why there is none.
+type download struct {
+	feed *calendar.Feed
+	err  error
+	at   time.Time // when sift tried
 }
 
-// meetings reads the calendar for day, when one is connected: once per
-// day per run, since the review reloads the day after every change.
-// The review's Refresh keeps today's current.
-func (r *run) meetings(cfg Config, start time.Time) calendar.Day {
+// meetings is day's calendar, read from this run's one download of the
+// feed. Unless wait, it does not download: before the first download
+// ends, the day's calendar is Pending, and Refresh fetches it.
+func (r *run) meetings(cfg Config, start time.Time, wait bool) calendar.Day {
 	k := start.Format("2006-01-02")
 	r.calMu.Lock()
-	f, ok := r.calendars[k]
+	d, ok := r.calendars[k]
+	dl := r.feed
 	r.calMu.Unlock()
-	if ok {
-		return f.day
+	switch {
+	case ok:
+		return d
+	case dl == nil && !wait:
+		return calendar.Day{Source: calendar.Pending}
+	case dl == nil:
+		dl = r.download(cfg, func(*download) bool { return false })
 	}
-	at := r.Now()
-	d := r.fetch(cfg, start)
-	r.storeCalendar(k, at, d)
+	return r.dayOf(dl, start)
+}
+
+// dayOf reads start from dl, and keeps it while dl is the latest download.
+func (r *run) dayOf(dl *download, start time.Time) calendar.Day {
+	var d calendar.Day
+	dir, err := r.dataDir()
+	switch {
+	case errors.Is(dl.err, errNoCalendar):
+		d = calendar.Day{Source: calendar.None}
+	case err != nil:
+		d = calendar.Day{Source: calendar.None, Problem: err.Error()}
+	default:
+		d = calendar.DayOf(dir, dl.feed, dl.err, start)
+	}
+	r.calMu.Lock()
+	defer r.calMu.Unlock()
+	if r.feed == dl {
+		r.calendars[start.Format("2006-01-02")] = d
+	}
 	return d
 }
 
-// Refresh refetches day's calendar when the day is today, a calendar is
-// in use, and it was last tried calendarEvery ago or more. It runs off the
-// review's UI goroutine and never holds the lock while it fetches.
+// download fetches the feed unless the latest download is fresh enough.
+// One download runs at a time, and the lock that Load takes is never held
+// while it does.
+func (r *run) download(cfg Config, stale func(*download) bool) *download {
+	r.fetchMu.Lock()
+	defer r.fetchMu.Unlock()
+	r.calMu.Lock()
+	cur := r.feed
+	r.calMu.Unlock()
+	if cur != nil && !stale(cur) {
+		return cur
+	}
+	at := r.Now()
+	f, err := r.fetch(cfg)
+	dl := &download{f, err, at}
+	r.calMu.Lock()
+	r.feed, r.calendars = dl, map[string]calendar.Day{}
+	r.calMu.Unlock()
+	return dl
+}
+
+// Refresh downloads the feed when the review has none yet, or when the
+// last try is calendarEvery old and day is today or that try failed. It
+// runs off the review's UI goroutine.
 func (s source) Refresh(day time.Time) {
 	r := s.r
-	now := r.Now()
-	if !r.withCalendar || r.demoMeetings != nil || !inDay(day, now) {
-		return
-	}
-	k := day.Format("2006-01-02")
-	r.calMu.Lock()
-	f, ok := r.calendars[k]
-	r.calMu.Unlock()
-	if !ok || now.Sub(f.at) < calendarEvery {
+	if !r.withCalendar || r.demoMeetings != nil {
 		return
 	}
 	cfg, err := r.config()
 	if err != nil {
 		return
 	}
-	r.storeCalendar(k, now, r.fetch(cfg, day))
+	now := r.Now()
+	r.download(cfg, func(d *download) bool {
+		return now.Sub(d.at) >= calendarEvery && (inDay(day, now) || d.err != nil)
+	})
 }
 
-func (r *run) storeCalendar(k string, at time.Time, d calendar.Day) {
-	r.calMu.Lock()
-	defer r.calMu.Unlock()
-	if r.calendars == nil {
-		r.calendars = map[string]fetched{}
-	}
-	r.calendars[k] = fetched{d, at}
-}
-
-func (r *run) fetchMeetings(cfg Config, start time.Time) calendar.Day {
+// fetchFeed downloads the connected calendar's feed.
+func (r *run) fetchFeed(cfg Config) (*calendar.Feed, error) {
 	s, err := r.secrets()
 	if err != nil {
-		return calendar.Day{Source: calendar.None}
+		return nil, errNoCalendar
 	}
 	address, _, err := s.Get(calendarSecret)
-	if err != nil {
-		return calendar.Day{Source: calendar.None}
+	if err != nil || address == "" {
+		return nil, errNoCalendar
 	}
-	dir, err := r.dataDir()
-	if err != nil {
-		return calendar.Day{Source: calendar.None, Problem: err.Error()}
-	}
-	return calendar.Load(context.Background(), nil, dir, address, cfg.Email, start)
+	return calendar.Fetch(context.Background(), nil, address, cfg.Email, r.Now().Location())
 }
 
 // calendarNote says where a day's meetings came from.
@@ -137,6 +169,8 @@ func calendarNote(c calendar.Day) string {
 		return c.Problem
 	case c.Source == calendar.None || c.Source == "":
 		return "no calendar connected"
+	case c.Source == calendar.Pending:
+		return "calendar: loading"
 	case len(c.Skipped) > 0:
 		return fmt.Sprintf("calendar: %s, %d left out", plural(len(c.Meetings), "meeting"), len(c.Skipped))
 	}
