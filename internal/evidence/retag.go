@@ -2,8 +2,10 @@ package evidence
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -55,6 +57,48 @@ func (s Retags) Append(rt Retag) error {
 		return err
 	}
 	return f.Close()
+}
+
+// Remove takes back the one retag made in session at at, the latest if
+// there are two. The others stay as they were, a torn line included.
+func (s Retags) Remove(session string, at time.Time) error {
+	unlock, err := lockFor(filepath.Join(s.Dir, LockFile), 2*time.Second)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	b, err := os.ReadFile(s.path())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	lines := bytes.SplitAfter(b, []byte("\n"))
+	drop := -1
+	for i, l := range lines {
+		var rt Retag
+		if json.Unmarshal(l, &rt) == nil && rt.Session == session && rt.At.Equal(at) {
+			drop = i
+		}
+	}
+	if drop < 0 {
+		return fmt.Errorf("no retag of session %s made at %s", session, at.Format(time.RFC3339))
+	}
+	tmp, err := os.CreateTemp(s.Dir, "retags-*.jsonl")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	for i, l := range lines {
+		if i != drop {
+			if _, err := tmp.Write(l); err != nil {
+				tmp.Close()
+				return err
+			}
+		}
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), s.path())
 }
 
 // All reads every retag in the order they were made. Like the log, it

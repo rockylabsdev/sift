@@ -86,3 +86,35 @@ func TestRetagsAppendThenAll(t *testing.T) {
 		t.Fatalf("read back %+v", got)
 	}
 }
+
+func TestRetagsRemoveTakesBackOnlyThatOne(t *testing.T) {
+	s := Retags{Dir: t.TempDir()}
+	at := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	for i, rt := range []Retag{
+		{Session: "s1", Was: "PUN-142", Ticket: "PUN-160", At: at},
+		{Session: "s2", Was: "PUN-142", Ticket: "PUN-160", At: at},
+		{Session: "s1", Was: "PUN-160", Ticket: "PUN-170", At: at.Add(time.Minute)},
+	} {
+		if err := s.Append(rt); err != nil {
+			t.Fatal(i, err)
+		}
+		if i == 0 {
+			f, _ := os.OpenFile(filepath.Join(s.Dir, "retags.jsonl"), os.O_APPEND|os.O_WRONLY, 0)
+			f.WriteString("{torn\n")
+			f.Close()
+		}
+	}
+	if err := s.Remove("s1", at.In(time.Local)); err != nil {
+		t.Fatal(err)
+	}
+	got, problems, err := s.All()
+	if err != nil || len(problems) != 1 || len(got) != 2 || got[0].Session != "s2" || got[1].Ticket != "PUN-170" {
+		t.Fatalf("after removing s1's first retag: %+v, problems %v, err %v", got, problems, err)
+	}
+	if err := s.Remove("s1", at); err == nil {
+		t.Fatal("removing a retag that is not there says nothing")
+	}
+	if entries, _ := os.ReadDir(s.Dir); len(entries) != 2 {
+		t.Fatalf("left behind %v; want only the retags and the lock", entries)
+	}
+}
