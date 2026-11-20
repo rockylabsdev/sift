@@ -1,10 +1,12 @@
 ---
 description: Show a day's sift draft and confirm it
-argument-hint: "[YYYY-MM-DD]"
+argument-hint: "[YYYY-MM-DD] | retag KEY [from HH:MM]"
 allowed-tools: Bash(sift draft:*), Bash(sift status:*)
 ---
 
-Show the user the sift draft for $ARGUMENTS (today if empty, or the day `sift status` says is waiting).
+If $ARGUMENTS starts with "retag", sift's hook has already handled it. Tell the user, in plain words, what the sentence sift added to the context says, and do nothing else: run no commands.
+
+Otherwise, show the user the sift draft for $ARGUMENTS (today if empty, or the day `sift status` says is waiting).
 
 1. Run `sift draft --md` (add `--date $ARGUMENTS` when a date was given) and show its output as it is. Do not round, merge or reword the numbers.
 2. Point out anything unassigned: meetings, gaps, or time with no ticket. Say that `sift` opens the review screen to assign or adjust it.
