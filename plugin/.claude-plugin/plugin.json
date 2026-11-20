@@ -1,5 +1,5 @@
 {
   "name": "sift",
   "description": "Records each prompt you type as evidence for sift, the terminal worklog drafter. Needs the sift binary on PATH.",
-  "version": "0.1.0-rc.3"
+  "version": "0.1.0-rc.4"
 }
