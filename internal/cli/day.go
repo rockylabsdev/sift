@@ -14,7 +14,8 @@ import (
 )
 
 // day reads the evidence around a local calendar day: the day itself plus
-// enough either side for a stretch that crosses midnight.
+// enough either side for a stretch that crosses midnight, with retags
+// applied. Every reader of a day goes through here.
 func (r *run) day(date string) (time.Time, []evidence.Event, error) {
 	now := r.Now()
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
@@ -31,10 +32,28 @@ func (r *run) day(date string) (time.Time, []evidence.Event, error) {
 	}
 	end := time.Date(start.Year(), start.Month(), start.Day()+1, 0, 0, 0, 0, start.Location())
 	events, problems, err := evidence.Log{Dir: dir}.Between(start.Add(-2*time.Hour), end.Add(2*time.Hour))
-	for _, p := range problems {
+	if err != nil {
+		return start, nil, err
+	}
+	rs, more, err := evidence.Retags{Dir: dir}.All()
+	if err != nil {
+		return start, nil, err
+	}
+	for _, p := range append(problems, more...) {
 		r.notes = append(r.notes, fmt.Sprintf("skipped %s line %d: %s", p.File, p.Line, p.Err))
 	}
-	return start, events, err
+	// a confirmed day keeps deriving what was sent: a later retag passes it by
+	// (a broken decisions file is load's to report)
+	if dec, _ := (draft.Store{Dir: dir}).Load(start.Format("2006-01-02")); dec.Confirmed != nil {
+		var kept []evidence.Retag
+		for _, rt := range rs {
+			if !rt.At.After(dec.Confirmed.At) {
+				kept = append(kept, rt)
+			}
+		}
+		rs = kept
+	}
+	return start, evidence.Apply(events, rs), nil
 }
 
 func inDay(start time.Time, at time.Time) bool {
