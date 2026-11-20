@@ -141,10 +141,11 @@ type Draft struct {
 }
 
 // load reads, derives and decides the day date ("" for today).
-func (r *run) load(date string) (Loaded, error) { return r.loadAs(date, nil) }
+func (r *run) load(date string) (Loaded, error) { return r.loadAs(date, nil, true) }
 
-// loadAs is load with day's edit to the retags.
-func (r *run) loadAs(date string, edit func([]evidence.Retag) []evidence.Retag) (Loaded, error) {
+// loadAs is load with day's edit to the retags. Unless wait, a calendar
+// not yet downloaded is left Pending.
+func (r *run) loadAs(date string, edit func([]evidence.Retag) []evidence.Retag, wait bool) (Loaded, error) {
 	var l Loaded
 	cfg, err := r.config()
 	if err != nil {
@@ -177,7 +178,7 @@ func (r *run) loadAs(date string, edit func([]evidence.Retag) []evidence.Retag) 
 	}
 	var meetings []derive.Meeting
 	if l.Decisions.Confirmed == nil && r.withCalendar {
-		l.Calendar = r.meetings(cfg, start)
+		l.Calendar = r.meetings(cfg, start, wait)
 		for _, m := range l.Calendar.Meetings {
 			meetings = append(meetings, derive.Meeting{From: m.From, To: m.To, Title: m.Title})
 		}

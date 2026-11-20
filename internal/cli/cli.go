@@ -68,9 +68,11 @@ type run struct {
 
 	withCalendar bool                                 // fetch meetings when loading a day
 	demoMeetings func(day time.Time) []derive.Meeting // the demo's fixed meetings
-	fetch        func(Config, time.Time) calendar.Day // reads a day's calendar: fetchMeetings, or a test's feed
-	calMu        sync.Mutex                           // the review refreshes calendars off its UI goroutine
-	calendars    map[string]fetched                   // this run's calendar days, by date
+	fetch        func(Config) (*calendar.Feed, error) // downloads the feed: fetchFeed, or a test's
+	fetchMu      sync.Mutex                           // one download at a time
+	calMu        sync.Mutex                           // guards feed and calendars; the review downloads off its UI goroutine
+	feed         *download                            // this run's latest download; nil before the first ends
+	calendars    map[string]calendar.Day              // days read from feed, by date
 }
 
 type usageError struct{ msg string }
@@ -104,7 +106,7 @@ const usage = `sift: a terminal worklog drafter
 // Run runs sift with args and returns the exit code.
 func Run(args []string, env Env) int {
 	r := &run{Env: env, json: env.Getenv("SIFT_JSON") == "1", withCalendar: true}
-	r.fetch = r.fetchMeetings
+	r.fetch = r.fetchFeed
 	if len(args) == 0 {
 		args = []string{"review"}
 	}
@@ -230,6 +232,9 @@ type Config struct {
 	} `json:"jira,omitempty"`
 	Email     string `json:"email,omitempty"`      // yours, to tell your calendar invitations apart
 	AgentTime string `json:"agent_time,omitempty"` // "fill" (default), "workday" or "off"
+	// NoAttendees is how events naming no attendee or organizer count:
+	// "meeting", "skip", or unset to count them when no event names anyone.
+	NoAttendees string `json:"calendar_no_attendees,omitempty"`
 }
 
 func (r *run) config() (Config, error) {
@@ -262,6 +267,11 @@ func (r *run) config() (Config, error) {
 	case "", derive.AgentFill, derive.AgentWorkday, derive.AgentOff:
 	default:
 		return c, fmt.Errorf("%s: agent_time must be fill, workday or off, not %q", path, c.AgentTime)
+	}
+	switch calendar.Unlisted(c.NoAttendees) {
+	case calendar.Detect, calendar.AsMeetings, calendar.AsAlone:
+	default:
+		return c, fmt.Errorf("%s: calendar_no_attendees must be meeting or skip, not %q", path, c.NoAttendees)
 	}
 	if c.Round != 0 && c.Round != 5 && c.Round != 15 {
 		return c, fmt.Errorf("%s: round_minutes must be 0, 5 or 15, not %d", path, c.Round)

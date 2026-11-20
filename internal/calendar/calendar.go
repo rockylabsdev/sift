@@ -1,4 +1,4 @@
-// Package calendar reads the user's iCalendar subscription and turns one
+// Package calendar reads the user's iCalendar subscription and turns each
 // day of it into meetings, plus the events it left out and why.
 package calendar
 
@@ -43,12 +43,32 @@ type Skipped struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// Unlisted is how events that name no attendee and no organizer count.
+// Published Outlook feeds name no one on any event.
+type Unlisted string
+
+const (
+	Detect     Unlisted = ""        // as meetings when no event in the feed names anyone
+	AsMeetings Unlisted = "meeting" // as meetings, subject to the other rules
+	AsAlone    Unlisted = "skip"    // left out as Alone
+)
+
+// people is who an event names.
+type people int
+
+const (
+	unlisted people = iota // no attendee and no organizer
+	alone                  // only the owner, rooms and resources
+	others
+)
+
 // event is one VEVENT, read into what the rules need.
 type event struct {
 	uid, title string
 	start      stamp
 	length     time.Duration
-	skip       Reason // empty for a meeting
+	skip       Reason // why it is left out, before who it names; empty otherwise
+	people     people
 	rule       *rrule.RRule
 	extra      []stamp        // RDATE
 	recurrence *time.Time     // the RECURRENCE-ID of an override
@@ -59,26 +79,34 @@ type event struct {
 // that can land on the day.
 const widest = 14 * time.Hour
 
-// Parse reads an iCalendar feed and returns the occurrences that overlap
-// the local calendar day containing day, in day's Location, clipped to
-// it. Floating times and DATE values are read in day's Location. owner is
-// the user's email address. The error is set only when the feed is not
-// iCalendar; an event that cannot be read is Skipped as Unreadable.
-func Parse(ics []byte, owner string, day time.Time) ([]Meeting, []Skipped, error) {
-	y, m, d := day.Date()
-	loc := day.Location()
-	from := time.Date(y, m, d, 0, 0, 0, 0, loc)
-	to := time.Date(y, m, d+1, 0, 0, 0, 0, loc)
+// Feed is a calendar feed, read once, that gives any day's meetings.
+type Feed struct {
+	events     []*event
+	unreadable []Skipped
+	listed     bool // some event names an attendee or an organizer
+	// At is when the feed was fetched.
+	At time.Time
+}
 
+// Counts is whether rule counts f's unlisted events as meetings.
+func (f *Feed) Counts(rule Unlisted) bool {
+	return rule == AsMeetings || rule == Detect && !f.listed
+}
+
+// Listed is whether some event in f names an attendee or an organizer.
+func (f *Feed) Listed() bool { return f.listed }
+
+// Parse reads an iCalendar feed. Floating times and DATE values are read
+// in loc. owner is the user's email address. The error is set only when
+// the feed is not iCalendar; an event that cannot be read is Skipped as
+// Unreadable on every day.
+func Parse(ics []byte, owner string, loc *time.Location) (*Feed, error) {
 	comps, err := decode(ics)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	z := newZones(comps, loc)
-
-	var meetings []Meeting
-	var skipped []Skipped
-	var events []*event
+	f := &Feed{}
 	masters := map[string]*event{}
 	for _, c := range comps {
 		if c.Name != ical.CompEvent {
@@ -88,29 +116,48 @@ func Parse(ics []byte, owner string, day time.Time) ([]Meeting, []Skipped, error
 		if err != nil {
 			uid, _ := c.Props.Text(ical.PropUID)
 			title, _ := c.Props.Text(ical.PropSummary)
-			skipped = append(skipped, Skipped{Meeting{UID: uid, Title: title}, Unreadable, err.Error()})
+			f.unreadable = append(f.unreadable, Skipped{Meeting{UID: uid, Title: title}, Unreadable, err.Error()})
 			continue
 		}
-		events = append(events, e)
+		f.events = append(f.events, e)
+		f.listed = f.listed || e.people != unlisted
 		if e.recurrence == nil {
 			masters[e.uid] = e
 		}
 	}
-	for _, e := range events {
+	for _, e := range f.events {
 		if master := masters[e.uid]; e.recurrence != nil && master != nil {
 			master.excluded[e.recurrence.Unix()] = true
 		}
 	}
+	return f, nil
+}
 
-	for _, e := range events {
+// Day returns the occurrences that overlap the local calendar day
+// containing day, in day's Location, clipped to it. rule says how events
+// that name no one count.
+func (f *Feed) Day(day time.Time, rule Unlisted) ([]Meeting, []Skipped) {
+	counts := f.Counts(rule)
+	y, m, d := day.Date()
+	loc := day.Location()
+	from := time.Date(y, m, d, 0, 0, 0, 0, loc)
+	to := time.Date(y, m, d+1, 0, 0, 0, 0, loc)
+
+	var meetings []Meeting
+	skipped := append([]Skipped(nil), f.unreadable...)
+	for _, e := range f.events {
+		reason := e.skip
+		if reason == "" && (e.people == alone || e.people == unlisted && !counts) {
+			reason = Alone
+		}
 		for _, s := range e.occurrences(from.UTC().Add(-e.length-widest), to.UTC().Add(widest)) {
 			end := s.Add(e.length)
 			if !s.Before(to) || !end.After(from) {
 				continue
 			}
 			o := Meeting{UID: e.uid, Title: e.title, From: maxTime(s, from).In(loc), To: minTime(end, to).In(loc)}
-			if e.skip != "" {
-				skipped = append(skipped, Skipped{Meeting: o, Reason: e.skip})
+			if reason != "" {
+				skipped = append(skipped, Skipped{Meeting: o, Reason: reason})
 			} else {
 				meetings = append(meetings, o)
 			}
@@ -118,7 +165,7 @@ func Parse(ics []byte, owner string, day time.Time) ([]Meeting, []Skipped, error
 	}
 	sort.SliceStable(meetings, func(i, j int) bool { return less(meetings[i], meetings[j]) })
 	sort.SliceStable(skipped, func(i, j int) bool { return less(skipped[i].Meeting, skipped[j].Meeting) })
-	return meetings, skipped, nil
+	return meetings, skipped
 }
 
 // occurrences are the event's start instants whose wall times fall in [lo, hi].
@@ -236,11 +283,16 @@ func read(c *ical.Component, owner string, z zones) (*event, error) {
 
 	// The organizer counts as another person: a 1:1 invitation may list
 	// only the invitee.
-	others, declined := false, false
-	if p := c.Props.Get(ical.PropOrganizer); p != nil && address(p) != owner {
-		others = true
+	declined := false
+	organizer := c.Props.Get(ical.PropOrganizer)
+	attendees := c.Props.Values(ical.PropAttendee)
+	if organizer != nil || len(attendees) > 0 {
+		e.people = alone
 	}
-	for _, p := range c.Props.Values(ical.PropAttendee) {
+	if organizer != nil && address(organizer) != owner {
+		e.people = others
+	}
+	for _, p := range attendees {
 		if address(&p) == owner {
 			// No owner ATTENDEE at all, as when the owner organizes, reads as accepted.
 			declined = strings.EqualFold(p.Params.Get(ical.ParamParticipationStatus), "DECLINED")
@@ -249,7 +301,7 @@ func read(c *ical.Component, owner string, z zones) (*event, error) {
 		switch strings.ToUpper(p.Params.Get(ical.ParamCalendarUserType)) {
 		case "ROOM", "RESOURCE":
 		default:
-			others = true
+			e.people = others
 		}
 	}
 	// One reason per occurrence; the first that applies.
@@ -262,8 +314,6 @@ func read(c *ical.Component, owner string, z zones) (*event, error) {
 		e.skip = Declined
 	case free:
 		e.skip = Free
-	case !others:
-		e.skip = Alone
 	}
 	return e, nil
 }

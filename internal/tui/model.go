@@ -24,6 +24,7 @@ type Input struct {
 	Round     int
 	IdleGap   int
 	Meetings  string            // where meetings came from, for the screen to say
+	Pending   bool              // the calendar is still downloading; Refresh fetches it
 	Today     time.Time         // midnight today, to say how far back the day is
 	Tracker   string            // where confirmed worklogs go: "Jira", or "" for the local log
 	Sent      map[string]Status // a confirmed day's worklogs, by ticket, as the outbox has them
@@ -45,8 +46,9 @@ type Source interface {
 	Confirm(day time.Time) (string, error)
 	// Tracker names where confirmed worklogs go ("Jira", or "the local log").
 	Tracker() string
-	// Refresh brings day's slow sources, such as the calendar, up to date.
-	// It runs off the UI goroutine, concurrently with Load.
+	// Refresh brings day's slow sources, such as the calendar, up to date,
+	// fetching them when the Input was Pending. It runs off the UI
+	// goroutine, concurrently with Load.
 	Refresh(day time.Time)
 	// Preview loads day as it would be after c, and saves nothing.
 	Preview(day time.Time, c RetagChange) (Input, error)
@@ -68,6 +70,9 @@ const refresh = 10 * time.Second
 type tick struct{}
 
 type refreshed struct{}
+
+// arrived is a Pending calendar fetched.
+type arrived struct{}
 
 func next() tea.Cmd { return tea.Tick(refresh, func(time.Time) tea.Msg { return tick{} }) }
 
@@ -232,7 +237,17 @@ func (m *Model) change(f func(*draft.Decisions) error) {
 	m.load(m.in.Start)
 }
 
-func (m Model) Init() tea.Cmd { return next() }
+func (m Model) Init() tea.Cmd { return tea.Batch(next(), m.awaitCalendar()) }
+
+// awaitCalendar fetches the calendar off the UI goroutine when the day
+// shown is waiting for it.
+func (m Model) awaitCalendar() tea.Cmd {
+	if !m.in.Pending {
+		return nil
+	}
+	src, day := m.src, m.in.Start
+	return func() tea.Msg { src.Refresh(day); return arrived{} }
+}
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch k := msg.(type) {
@@ -244,6 +259,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.load(m.in.Start)
 		}
 		return m, next()
+	case arrived:
+		if m.mode == nil {
+			m.load(m.in.Start)
+		}
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.w, m.h = k.Width, k.Height
 	case tea.KeyPressMsg:
@@ -281,6 +301,8 @@ func (m Model) browse(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		switch {
 		case m.dr.Confirmed:
 			m.msg = "Already confirmed."
+		case m.in.Pending:
+			m.msg = "The calendar is still loading. Confirm once its meetings are in."
 		case len(m.dr.Sendable()) == 0:
 			m.msg = "Nothing to confirm on this day."
 		default:
@@ -303,9 +325,11 @@ func (m Model) browse(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "[", "left", "h":
 		m.cur = 0
 		m.load(m.in.Start.AddDate(0, 0, -1))
+		return m, m.awaitCalendar()
 	case "]", "right", "l":
 		m.cur = 0
 		m.load(m.in.Start.AddDate(0, 0, 1))
+		return m, m.awaitCalendar()
 	case "t", "enter":
 		if _, can := draft.Assignable(s); ok && can {
 			id, opts := draft.ID(s), m.options(s)

@@ -56,9 +56,9 @@ sift setup none                                                  # no tracker: c
 sift import punchcard                                            # keep punchcard's worklog history in sift log
 ```
 
-Secrets go to the macOS Keychain, else a 0600 file under `~/.config/sift/secrets`. Meetings leave out all-day events, declined and cancelled invitations, events marked free, and events with no one else invited; `sift draft` lists what it left out and why.
+Secrets go to the macOS Keychain, else a 0600 file under `~/.config/sift/secrets`. Meetings leave out all-day events, declined and cancelled invitations, events marked free, and events with no one else invited; `sift draft` lists what it left out and why. A published Outlook calendar names no attendees on any event, so there every event counts as a meeting, subject to the other rules, and `sift draft` says so. `calendar_no_attendees` (`meeting` or `skip`) decides this for events that name no one, whatever the feed.
 
-Settings live in `~/.config/sift/config.json`: `idle_gap_minutes` (default 10), `round_minutes` (0, 5 or 15), `events_beat_meetings`, `projects` (the branch rule takes only these projects' keys), `agent_time` (`fill`, `workday` or `off`) and `theme`.
+Settings live in `~/.config/sift/config.json`: `idle_gap_minutes` (default 10), `round_minutes` (0, 5 or 15), `events_beat_meetings`, `projects` (the branch rule takes only these projects' keys), `agent_time` (`fill`, `workday` or `off`), `calendar_no_attendees` (`meeting` or `skip`) and `theme`.
 
 Agents count too. While subagents or a long agent run work through a spec and you are not prompting, their activity fills that otherwise silent time, credited to the ticket of the session that started them, even in worktrees whose branches name no ticket. Your own prompts always come first, and agents running at once share the time rather than adding to it. The review draws agent time as `┅`. The event format is a public contract, described in [docs/evidence.md](docs/evidence.md).
 

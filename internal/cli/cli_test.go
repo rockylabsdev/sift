@@ -3,10 +3,14 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -250,19 +254,31 @@ func TestTodayCountsNothingAfterNow(t *testing.T) {
 	}
 }
 
+// feedOf is a feed of n half-hour meetings with a colleague on day, from 08:00.
+func feedOf(t *testing.T, n int, day time.Time) *calendar.Feed {
+	t.Helper()
+	ics := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"
+	for i := 0; i < n; i++ {
+		from := day.Add(time.Duration(8+i) * time.Hour)
+		ics += fmt.Sprintf("BEGIN:VEVENT\r\nUID:sync-%d\r\nSUMMARY:sync\r\nDTSTART:%s\r\nDTEND:%s\r\nORGANIZER:mailto:pal@example.com\r\nEND:VEVENT\r\n",
+			i, from.Format("20060102T150405"), from.Add(30*time.Minute).Format("20060102T150405"))
+	}
+	f, err := calendar.Parse([]byte(ics+"END:VCALENDAR\r\n"), "me@example.com", day.Location())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
 func TestTheReviewRefetchesTodaysCalendarEveryFiveMinutes(t *testing.T) {
 	h := newHarness(t)
 	h.now = time.Date(2026, 11, 10, 9, 0, 0, 0, time.Local)
 	today, yesterday := time.Date(2026, 11, 10, 0, 0, 0, 0, time.Local), time.Date(2026, 11, 9, 0, 0, 0, 0, time.Local)
 	fetches := 0
 	r := &run{Env: Env{Getenv: func(k string) string { return h.env[k] }, Now: func() time.Time { return h.now }}, withCalendar: true}
-	r.fetch = func(_ Config, day time.Time) calendar.Day {
+	r.fetch = func(Config) (*calendar.Feed, error) {
 		fetches++
-		d := calendar.Day{Source: calendar.Fetched}
-		for i := 0; i < fetches; i++ {
-			d.Meetings = append(d.Meetings, calendar.Meeting{From: day.Add(time.Duration(8+i) * time.Hour), To: day.Add(time.Duration(8+i)*time.Hour + 30*time.Minute), Title: "sync"})
-		}
-		return d
+		return feedOf(t, fetches, today), nil
 	}
 	s := source{r}
 	meetings := func(day time.Time) string {
@@ -273,8 +289,12 @@ func TestTheReviewRefetchesTodaysCalendarEveryFiveMinutes(t *testing.T) {
 		}
 		return in.Meetings
 	}
+	if got := meetings(today); fetches != 0 || got != "calendar: loading" {
+		t.Fatalf("the first load fetched %d times and says %q; want no fetch, and loading", fetches, got)
+	}
+	s.Refresh(today)
 	if got := meetings(today); fetches != 1 || got != "calendar: 1 meeting" {
-		t.Fatalf("the first load fetched %d times and says %q", fetches, got)
+		t.Fatalf("after the first refresh, %d fetches and %q", fetches, got)
 	}
 	h.now = h.now.Add(4 * time.Minute)
 	s.Refresh(today)
@@ -291,10 +311,90 @@ func TestTheReviewRefetchesTodaysCalendarEveryFiveMinutes(t *testing.T) {
 	if got := meetings(today); fetches != 2 || got != "calendar: 2 meetings" {
 		t.Fatalf("five minutes on, %d fetches and %q; want a second fetch and its new meeting", fetches, got)
 	}
-	meetings(yesterday)
+	if got := meetings(yesterday); got != "calendar: 0 meetings" {
+		t.Fatalf("yesterday says %q", got)
+	}
 	h.now = h.now.Add(time.Hour)
 	s.Refresh(yesterday)
-	if fetches != 3 {
-		t.Fatalf("%d fetches; a past day is fetched once, when it loads, and never refreshed", fetches)
+	if fetches != 2 {
+		t.Fatalf("%d fetches; a past day reads the run's feed and never refetches it", fetches)
+	}
+}
+
+func TestTheReviewFetchesTheFeedOnceAndNeverOnTheUIGoroutine(t *testing.T) {
+	h := newHarness(t)
+	h.now = time.Date(2026, 11, 10, 9, 0, 0, 0, time.Local)
+	today := time.Date(2026, 11, 10, 0, 0, 0, 0, time.Local)
+	var mu sync.Mutex
+	fetches := 0
+	release := make(chan struct{})
+	r := &run{Env: Env{Getenv: func(k string) string { return h.env[k] }, Now: func() time.Time { return h.now }}, withCalendar: true}
+	r.fetch = func(Config) (*calendar.Feed, error) {
+		mu.Lock()
+		fetches++
+		mu.Unlock()
+		<-release
+		return feedOf(t, 1, today.AddDate(0, 0, -2)), nil
+	}
+	s := source{r}
+	go s.Refresh(today)
+	for i := 0; i < 3; i++ {
+		loaded := make(chan string, 1)
+		go func(day time.Time) {
+			in, _ := s.Load(day)
+			loaded <- in.Meetings
+		}(today.AddDate(0, 0, -i))
+		select {
+		case got := <-loaded:
+			if got != "calendar: loading" {
+				t.Errorf("day -%d says %q while the feed downloads", i, got)
+			}
+		case <-time.After(2 * time.Second):
+			close(release)
+			t.Fatalf("loading day -%d waited for the calendar download", i)
+		}
+	}
+	close(release)
+	for i := 0; i < 3; i++ {
+		s.Refresh(today.AddDate(0, 0, -i))
+	}
+	if fetches != 1 {
+		t.Fatalf("three days downloaded the feed %d times; want once per run", fetches)
+	}
+	if in, _ := s.Load(today.AddDate(0, 0, -2)); in.Meetings != "calendar: 1 meeting" || in.Pending {
+		t.Fatalf("after the fetch, two days back says %q, pending %v", in.Meetings, in.Pending)
+	}
+}
+
+func TestDraftSaysHowEventsWithoutAttendeesCounted(t *testing.T) {
+	ics, err := os.ReadFile(filepath.Join("..", "calendar", "testdata", "published.ics"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write(ics) }))
+	defer srv.Close()
+	cases := []struct{ setting, want string }{
+		{"", "calendar: 2 meetings, 3 left out · published feed without attendees, events count as meetings"},
+		{"meeting", "calendar: 2 meetings, 3 left out · published feed without attendees, events count as meetings"},
+		{"skip", "calendar: 0 meetings, 5 left out"},
+	}
+	for _, c := range cases {
+		t.Run(c.setting, func(t *testing.T) {
+			h := newHarness(t)
+			secrets := filepath.Join(h.env["XDG_CONFIG_HOME"], "sift", "secrets")
+			os.MkdirAll(secrets, 0o700)
+			os.WriteFile(filepath.Join(secrets, "calendar-url"), []byte(srv.URL+"/cal.ics"), 0o600)
+			cfg, _ := json.Marshal(map[string]string{"email": "me@example.com", "calendar_no_attendees": c.setting})
+			os.WriteFile(filepath.Join(h.env["XDG_CONFIG_HOME"], "sift", "config.json"), cfg, 0o600)
+			if _, _, data := h.envelope("draft", "--date", "2026-11-10"); data["meetings"] != c.want {
+				t.Fatalf("draft says %q, want %q", data["meetings"], c.want)
+			}
+		})
+	}
+	h := newHarness(t)
+	os.MkdirAll(filepath.Join(h.env["XDG_CONFIG_HOME"], "sift"), 0o700)
+	os.WriteFile(filepath.Join(h.env["XDG_CONFIG_HOME"], "sift", "config.json"), []byte(`{"calendar_no_attendees": "always"}`), 0o600)
+	if code, _, stderr := h.run("", "draft"); code == 0 || !strings.Contains(stderr, "calendar_no_attendees must be meeting or skip") {
+		t.Fatalf("an unknown setting: exit %d, %q", code, stderr)
 	}
 }

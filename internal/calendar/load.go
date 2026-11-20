@@ -20,7 +20,8 @@ type Source string
 const (
 	Fetched Source = "fetched"
 	Cached  Source = "cached"
-	None    Source = "none" // no calendar, or it failed with nothing cached
+	None    Source = "none"    // no calendar, or it failed with nothing cached
+	Pending Source = "pending" // the feed is still downloading
 )
 
 // Day is one day of the calendar as a draft needs it.
@@ -30,6 +31,10 @@ type Day struct {
 	Source   Source    `json:"-"`
 	// At is when the meetings were fetched; zero when Source is None.
 	At time.Time `json:"at"`
+	// Unlisted is whether events that name no one counted as meetings, and
+	// Bare whether that is because no event in the feed names anyone.
+	Unlisted bool `json:"unlisted,omitempty"`
+	Bare     bool `json:"bare,omitempty"`
 	// Problem says, for the user, why the meetings are stale or missing.
 	Problem string `json:"-"`
 }
@@ -41,28 +46,44 @@ const Timeout = 30 * time.Second
 // most bounds the feed's size; years of history stay well under it.
 const most = 64 << 20
 
-// Load fetches the feed at address and reads day from it, saving the
-// result under dataDir. When the fetch or the feed fails, it falls back
-// to the saved day. An empty address means no calendar and no problem.
-// address is a secret, so no Problem names it.
-func Load(ctx context.Context, client *http.Client, dataDir, address, owner string, day time.Time) Day {
-	if address == "" {
-		return Day{Source: None}
-	}
-	cache := filepath.Join(dataDir, "calendar", day.Format("2006-01-02")+".json")
+// Fetch downloads the feed at address and reads it, with floating times
+// in loc. Its errors never contain the address, which is a secret.
+func Fetch(ctx context.Context, client *http.Client, address, owner string, loc *time.Location) (*Feed, error) {
 	ics, err := fetch(ctx, client, address)
-	var d Day
-	if err == nil {
-		d.Meetings, d.Skipped, err = Parse(ics, owner, day)
+	if err != nil {
+		return nil, err
 	}
+	f, err := Parse(ics, owner, loc)
+	if err != nil {
+		return nil, err
+	}
+	f.At = time.Now()
+	return f, nil
+}
+
+// DayOf reads day from f by rule and saves it under dataDir. err is why f
+// could not be fetched; then DayOf falls back to the saved day.
+func DayOf(dataDir string, f *Feed, err error, day time.Time, rule Unlisted) Day {
+	cache := filepath.Join(dataDir, "calendar", day.Format("2006-01-02")+".json")
 	if err != nil {
 		return fallback(cache, err.Error(), day.Location())
 	}
-	d.Source, d.At = Fetched, time.Now()
+	d := Day{Source: Fetched, At: f.At, Unlisted: f.Counts(rule), Bare: !f.Listed()}
+	d.Meetings, d.Skipped = f.Day(day, rule)
 	if err := save(cache, d); err != nil {
 		d.Problem = "The calendar was read but could not be saved for later: " + err.Error()
 	}
 	return d
+}
+
+// Load fetches the feed at address and reads day from it, as DayOf does.
+// An empty address means no calendar and no problem.
+func Load(ctx context.Context, client *http.Client, dataDir, address, owner string, rule Unlisted, day time.Time) Day {
+	if address == "" {
+		return Day{Source: None}
+	}
+	f, err := Fetch(ctx, client, address, owner, day.Location())
+	return DayOf(dataDir, f, err, day, rule)
 }
 
 func fallback(cache, why string, loc *time.Location) Day {

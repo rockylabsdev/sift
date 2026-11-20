@@ -35,11 +35,11 @@ func parse(t *testing.T, fixture, day string) ([]Meeting, []Skipped) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, s, err := Parse(ics, owner, at(day, "12:00"))
+	f, err := Parse(ics, owner, berlin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return m, s
+	return f.Day(at(day, "12:00"), Detect)
 }
 
 func same(t *testing.T, what string, got, want any) {
@@ -136,8 +136,58 @@ func TestMidnightIsClipped(t *testing.T) {
 
 func TestNotICalendar(t *testing.T) {
 	for _, body := range []string{"", "<html>sign in</html>"} {
-		if _, _, err := Parse([]byte(body), owner, at("2026-11-10", "12:00")); err == nil {
+		if _, err := Parse([]byte(body), owner, berlin); err == nil {
 			t.Errorf("Parse(%q) gave no error", body)
 		}
+	}
+}
+
+func TestAFeedWithoutAttendeesCountsItsEventsAsMeetings(t *testing.T) {
+	const day = "2026-11-10"
+	m, s := parse(t, "published.ics", day)
+	same(t, "meetings", m, []Meeting{
+		meeting("pub-standup", "Team standup", day, "08:10", "08:20"),
+		meeting("pub-weekly", "Team meeting", day, "12:00", "13:00"),
+	})
+	same(t, "skipped", s, []Skipped{
+		{Meeting: Meeting{UID: "pub-allday", Title: "Public holiday", From: at(day, "00:00"), To: endOfDay(day)}, Reason: AllDay},
+		{Meeting: meeting("pub-free", "Lunch", day, "12:30", "13:00"), Reason: Free},
+		{Meeting: meeting("pub-cancelled", "Canceled: Vendor call", day, "15:00", "15:30"), Reason: Cancelled},
+	})
+}
+
+func TestTheNoAttendeesSettingOverridesDetection(t *testing.T) {
+	const day = "2026-11-10"
+	read := func(fixture string) *Feed {
+		t.Helper()
+		ics, err := os.ReadFile(filepath.Join("testdata", fixture))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := Parse(ics, owner, berlin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	published := read("published.ics")
+	if m, _ := published.Day(at(day, "12:00"), AsAlone); len(m) != 0 {
+		t.Errorf("skip still counts %+v", m)
+	}
+	listed := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n" +
+		"BEGIN:VEVENT\r\nUID:with-pal\r\nSUMMARY:Pairing\r\nDTSTART:20261110T080000Z\r\nDTEND:20261110T090000Z\r\nORGANIZER:mailto:pal@example.com\r\nEND:VEVENT\r\n" +
+		"BEGIN:VEVENT\r\nUID:bare\r\nSUMMARY:Planning\r\nDTSTART:20261110T100000Z\r\nDTEND:20261110T110000Z\r\nEND:VEVENT\r\n" +
+		"END:VCALENDAR\r\n"
+	mixed, err := Parse([]byte(listed), owner, berlin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, s := mixed.Day(at(day, "12:00"), Detect)
+	same(t, "detected in a feed that names people: meetings", m, []Meeting{meeting("with-pal", "Pairing", day, "09:00", "10:00")})
+	same(t, "detected in a feed that names people: skipped", s, []Skipped{{Meeting: meeting("bare", "Planning", day, "11:00", "12:00"), Reason: Alone}})
+	m, _ = mixed.Day(at(day, "12:00"), AsMeetings)
+	same(t, "meeting", m, []Meeting{meeting("with-pal", "Pairing", day, "09:00", "10:00"), meeting("bare", "Planning", day, "11:00", "12:00")})
+	if m, s := read("alone.ics").Day(at(day, "12:00"), AsMeetings); len(m) != 0 || len(s) != 2 {
+		t.Errorf("an event that lists only the owner must stay Alone under meeting; got %+v, %+v", m, s)
 	}
 }
