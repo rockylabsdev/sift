@@ -905,7 +905,7 @@ func (m Model) View() tea.View {
 		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && m.msg == "" && m.err == nil {
 			status = ""
 		}
-		if m.asking {
+		if _, ok := m.mode.(confirming); ok {
 			keys = " " + bold(th.text, fmt.Sprintf("Confirm %s: %s, %s to %s?", m.in.Start.Format("Mon 2 Jan"), plural(len(m.dr.Sendable()), "worklog"), dur(m.dr.Total), m.src.Tracker())) +
 				fg(th.dim, "   y confirms · any other key cancels")
 			status = ""
