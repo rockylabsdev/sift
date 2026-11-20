@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -296,5 +297,46 @@ func TestTheReviewRefetchesTodaysCalendarEveryFiveMinutes(t *testing.T) {
 	s.Refresh(yesterday)
 	if fetches != 3 {
 		t.Fatalf("%d fetches; a past day is fetched once, when it loads, and never refreshed", fetches)
+	}
+}
+
+func TestTheReviewFetchesTheFeedOnceAndNeverOnTheUIGoroutine(t *testing.T) {
+	h := newHarness(t)
+	h.now = time.Date(2026, 11, 10, 9, 0, 0, 0, time.Local)
+	today := time.Date(2026, 11, 10, 0, 0, 0, 0, time.Local)
+	var mu sync.Mutex
+	fetches := 0
+	release := make(chan struct{})
+	r := &run{Env: Env{Getenv: func(k string) string { return h.env[k] }, Now: func() time.Time { return h.now }}, withCalendar: true}
+	r.fetch = func(_ Config, day time.Time) calendar.Day {
+		mu.Lock()
+		fetches++
+		mu.Unlock()
+		<-release
+		return calendar.Day{Source: calendar.Fetched, Meetings: []calendar.Meeting{{From: day.Add(8 * time.Hour), To: day.Add(8*time.Hour + 30*time.Minute), Title: "sync"}}}
+	}
+	s := source{r}
+	for i := 0; i < 3; i++ {
+		loaded := make(chan string, 1)
+		go func(day time.Time) {
+			in, _ := s.Load(day)
+			loaded <- in.Meetings
+		}(today.AddDate(0, 0, -i))
+		select {
+		case <-loaded:
+		case <-time.After(2 * time.Second):
+			close(release)
+			t.Fatalf("loading day -%d waited for the calendar download", i)
+		}
+	}
+	close(release)
+	for i := 0; i < 3; i++ {
+		s.Refresh(today.AddDate(0, 0, -i))
+	}
+	if fetches != 1 {
+		t.Fatalf("three days downloaded the feed %d times; want once per run", fetches)
+	}
+	if in, _ := s.Load(today.AddDate(0, 0, -2)); in.Meetings != "calendar: 1 meeting" {
+		t.Fatalf("after the fetch, two days back says %q", in.Meetings)
 	}
 }
