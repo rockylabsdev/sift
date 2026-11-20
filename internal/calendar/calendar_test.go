@@ -141,3 +141,17 @@ func TestNotICalendar(t *testing.T) {
 		}
 	}
 }
+
+func TestAFeedWithoutAttendeesCountsItsEventsAsMeetings(t *testing.T) {
+	const day = "2026-11-10"
+	m, s := parse(t, "published.ics", day)
+	same(t, "meetings", m, []Meeting{
+		meeting("pub-standup", "Team standup", day, "08:10", "08:20"),
+		meeting("pub-weekly", "Team meeting", day, "12:00", "13:00"),
+	})
+	same(t, "skipped", s, []Skipped{
+		{Meeting: Meeting{UID: "pub-allday", Title: "Public holiday", From: at(day, "00:00"), To: endOfDay(day)}, Reason: AllDay},
+		{Meeting: meeting("pub-free", "Lunch", day, "12:30", "13:00"), Reason: Free},
+		{Meeting: meeting("pub-cancelled", "Canceled: Vendor call", day, "15:00", "15:30"), Reason: Cancelled},
+	})
+}
