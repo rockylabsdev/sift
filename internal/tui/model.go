@@ -144,11 +144,11 @@ type row struct {
 func rowsOf(in Input) []row {
 	var out []row
 	if t := in.Decisions.Through(); !t.IsZero() {
-		from := in.Start
+		from, to := in.Start, t
 		if s := in.Before.Stretches; len(s) > 0 {
-			from = s[0].From
+			from, to = s[0].From, s[len(s)-1].To
 		}
-		out = append(out, row{Stretch: derive.Stretch{From: from, To: t}, sent: true})
+		out = append(out, row{Stretch: derive.Stretch{From: from, To: to}, sent: true})
 	}
 	for _, s := range in.Day.Stretches {
 		out = append(out, row{Stretch: s})

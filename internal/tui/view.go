@@ -117,12 +117,12 @@ func (m Model) laneLayout() (evRows int, sep bool, shown int) {
 
 // labelled is whether the day box gives meeting names a row of their own.
 func (m Model) labelled() bool {
-	for _, s := range m.list {
+	for _, s := range m.in.Before.Stretches {
 		if s.Kind == derive.InMeet {
 			return true
 		}
 	}
-	return false
+	return slices.ContainsFunc(m.list, func(r row) bool { return r.Kind == derive.InMeet })
 }
 
 func dayHeight(lanes, evRows int, sep, labels bool) int {
@@ -552,7 +552,10 @@ func (m Model) stretchBox(w, h int) []string {
 			} else {
 				line = " " + line
 			}
-			rows = append(rows, line, " "+fg(th.faint, strings.Repeat("─", iw-2)))
+			rows = append(rows, line)
+			if i+1 < len(m.list) {
+				rows = append(rows, " "+fg(th.faint, strings.Repeat("─", iw-2)))
+			}
 			continue
 		}
 		if r.skipped {
@@ -692,7 +695,7 @@ func (m Model) stretchBox(w, h int) []string {
 		rule = " " + fg(th.dim, hidden) + fg(th.faint, strings.Repeat("─", max(iw-2-lipgloss.Width(hidden), 0)))
 	}
 	total := "total"
-	if t := m.in.Decisions.Through(); !t.IsZero() {
+	if t := m.in.Decisions.Through(); !t.IsZero() && t.Before(m.in.Start.AddDate(0, 0, 1)) {
 		total = "since " + m.clockT(t)
 	}
 	foot := " " + fg(th.dim, fmt.Sprintf("%-11s", total)) + "   " + pad("", whatW)

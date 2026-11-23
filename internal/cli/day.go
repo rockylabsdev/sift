@@ -198,7 +198,7 @@ func (r *run) loadAs(date string, edit func([]evidence.Retag) []evidence.Retag, 
 		set.Blocks = append(set.Blocks, derive.Block{From: b.From, To: b.To, Ticket: b.Ticket})
 	}
 	var all, meetings []derive.Meeting
-	if r.withCalendar && l.Decisions.Through().Before(start.AddDate(0, 0, 1)) {
+	if r.withCalendar {
 		l.Calendar = r.meetings(cfg, start, wait)
 		for _, m := range l.Calendar.Meetings {
 			all = append(all, derive.Meeting{ID: meetingID(m), From: m.From, To: m.To, Title: m.Title})
