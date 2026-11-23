@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -73,16 +74,30 @@ func (m Model) laneLayout() (evRows int, sep bool, shown int) {
 		if c.ev == 3 && m.h < 44 {
 			continue
 		}
-		if dayHeight(n, c.ev, c.sep) <= room {
+		if dayHeight(n, c.ev, c.sep, m.labelled()) <= room {
 			return c.ev, c.sep, n
 		}
 	}
+	room -= dayHeight(0, 1, false, m.labelled()) - dayHeight(0, 1, false, false)
 	shown = max((room-6)/2, 1) // one density row and a baseline each, then "+N more"
 	return 1, false, min(shown, n)
 }
 
-func dayHeight(lanes, evRows int, sep bool) int {
+// labelled is whether the day box gives meeting names a row of their own.
+func (m Model) labelled() bool {
+	for _, s := range m.stretches() {
+		if s.Kind == derive.InMeet {
+			return true
+		}
+	}
+	return false
+}
+
+func dayHeight(lanes, evRows int, sep, labels bool) int {
 	h := 2 + 1 + lanes*(evRows+1) + 3
+	if labels {
+		h++
+	}
 	if sep && lanes > 1 {
 		h += lanes - 1
 	}
@@ -275,28 +290,54 @@ func (m Model) dayBox(w int) []string {
 			other[c] = on(th.faint, bgAt(c), " ")
 		}
 	}
+	// Each column shows the meeting at its middle minute, as the strip
+	// samples it. A meeting that runs into the next ends a column early, so
+	// back-to-back meetings read as separate bars.
+	var meets []derive.Stretch
 	for _, s := range m.stretches() {
-		if s.Kind != derive.InMeet {
-			continue
+		if s.Kind == derive.InMeet {
+			meets = append(meets, s)
 		}
-		c0 := (m.minute(s.From)-from)*g/(to-from) + 1
-		room := (m.minute(s.To)-from)*g/(to-from) - c0 - 1
+	}
+	meetAt := make([]int, g)
+	for c := range meetAt {
+		a, z := col(c)
+		meetAt[c] = -1
+		for i, s := range meets {
+			if mid := (a + z) / 2; mid >= m.minute(s.From) && mid < m.minute(s.To) {
+				meetAt[c] = i
+			}
+		}
+	}
+	for c := 1; c+1 < g; c++ {
+		if i := meetAt[c]; i >= 0 && meetAt[c-1] == i && meetAt[c+1] >= 0 && meetAt[c+1] != i {
+			other[c] = on(th.faint, bgAt(c), " ")
+		}
+	}
+	// Names go on their own row, from where each meeting starts, whole or
+	// not at all, two columns clear of the name before.
+	labels := make([]string, g)
+	for c := range labels {
+		labels[c] = on(th.faint, bgAt(c), " ")
+	}
+	free := 0
+	for i, s := range meets {
+		c0 := slices.Index(meetAt, i)
 		name := []rune(s.Meeting)
-		if room < 3 || c0 < 0 {
+		if c0 < free || c0+len(name) > min(g, nowCol+1) {
 			continue
-		}
-		if len(name) > room {
-			name = append(name[:room-1], '…')
 		}
 		tone := th.amber
 		if t := m.in.Decisions.Assign[draft.ID(s)]; t != "" {
 			tone = m.hue(t)
 		}
 		for j, r := range name {
-			if c0+j < g {
-				other[c0+j] = on(tone, bgAt(c0+j), string(r))
-			}
+			labels[c0+j] = on(tone, bgAt(c0+j), string(r))
 		}
+		free = c0 + len(name) + 2
+	}
+	if len(meets) > 0 {
+		out = append(out, strings.Repeat(" ", labelW)+strings.Join(labels, ""))
 	}
 	for c := nowCol + 1; c < g; c++ {
 		other[c] = on(th.faint, bgAt(c), " ")
@@ -311,6 +352,9 @@ func (m Model) dayBox(w int) []string {
 			bracket = "└" + strings.Repeat("─", z-a-1) + "┘"
 		}
 		when := m.clockT(sel.From) + "–" + m.clockT(sel.To)
+		if sel.Kind == derive.InMeet {
+			when += " " + sel.Meeting
+		}
 		mark := strings.Repeat(" ", a) + bracket + " " + when
 		if z+2+lipgloss.Width(when) > g {
 			mark = strings.Repeat(" ", max(a-lipgloss.Width(when)-1, 0)) + when + " " + bracket
@@ -873,7 +917,7 @@ func (m Model) View() tea.View {
 	default:
 		out = append(out, m.header())
 		evRows, sep, shown := m.laneLayout()
-		topH := dayHeight(shown, evRows, sep)
+		topH := dayHeight(shown, evRows, sep, m.labelled())
 		if shown < len(m.tickets) {
 			topH++
 		}
