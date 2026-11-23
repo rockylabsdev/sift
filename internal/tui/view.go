@@ -323,7 +323,9 @@ func (m Model) dayBox(w int) []string {
 		}
 	}
 	// Names go on their own row, from where each meeting starts, whole or
-	// not at all, two columns clear of the name before.
+	// not at all, two columns clear of the name before. A name may run past
+	// its bar only over columns no other meeting holds, so it never sits
+	// above a meeting it does not name.
 	labels := make([]string, g)
 	for c := range labels {
 		labels[c] = on(th.faint, bgAt(c), " ")
@@ -332,7 +334,7 @@ func (m Model) dayBox(w int) []string {
 	for i, s := range meets {
 		c0 := slices.Index(meetAt, i)
 		name := []rune(s.Meeting)
-		if c0 < free || c0+len(name) > min(g, nowCol+1) {
+		if c0 < free || c0+len(name) > min(g, nowCol+1) || slices.ContainsFunc(meetAt[c0:c0+len(name)], func(j int) bool { return j >= 0 && j != i }) {
 			continue
 		}
 		tone := th.amber

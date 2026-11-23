@@ -565,6 +565,9 @@ func TestMeetingNamesAreWholeOrAbsentAndBackToBackMeetingsSeparate(t *testing.T)
 		{From: hm(8, 0), To: hm(8, 10), Title: "Team standup"},
 		{From: hm(8, 10), To: hm(8, 20), Title: "OPS standup"},
 		{From: hm(10, 0), To: hm(10, 30), Title: "PUN-142 standup"},
+		{From: hm(13, 0), To: hm(13, 15), Title: "Quarterly planning: platform roadmap"},
+		{From: hm(13, 15), To: hm(13, 30), Title: "Incident review: checkout outage"},
+		{From: hm(15, 45), To: hm(16, 15), Title: "Design review"},
 	}
 	fr := frame(sized(New(f, day0, ""), 160, 38))
 	var other, labels string
@@ -577,11 +580,18 @@ func TestMeetingNamesAreWholeOrAbsentAndBackToBackMeetingsSeparate(t *testing.T)
 	if strings.Contains(other, "…") || strings.Contains(labels, "…") {
 		t.Fatalf("a meeting name was cut:\n%s\n%s", labels, other)
 	}
-	if !strings.Contains(labels, "Team standup") || !strings.Contains(labels, "PUN-142 standup") || strings.Contains(labels, "OPS standup") {
-		t.Fatalf("want Team standup and PUN-142 standup whole, and OPS standup left off for want of room:\n%s", labels)
+	for _, want := range []string{"OPS standup", "PUN-142 standup", "Incident review: checkout outage", "Design review"} {
+		if !strings.Contains(labels, want) {
+			t.Errorf("want %q whole: it has room before the next meeting\n%s", want, labels)
+		}
+	}
+	for _, not := range []string{"Team standup", "Quarterly planning"} {
+		if strings.Contains(labels, not) {
+			t.Errorf("%q runs over the next meeting's bar, so it must be left off\n%s\n%s", not, labels, other)
+		}
 	}
 	if !regexp.MustCompile(`▰ ▰`).MatchString(other) {
-		t.Fatalf("back-to-back standups run together:\n%s", other)
+		t.Fatalf("back-to-back meetings run together:\n%s", other)
 	}
 }
 
