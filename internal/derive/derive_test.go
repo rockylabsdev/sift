@@ -301,3 +301,40 @@ func TestNothingCountsAfterUntil(t *testing.T) {
 		t.Error("an until after the day changes it")
 	}
 }
+
+// TestSinceAndUntilSplitTheDay checks, on generated days, that a day cut at
+// any minute counts the same time per ticket as the whole day: what Until
+// keeps before the cut and what Since keeps from it add up, and Since
+// counts nothing before the cut.
+func TestSinceAndUntilSplitTheDay(t *testing.T) {
+	r := rand.New(rand.NewSource(7))
+	sum := func(d Day) map[string]int {
+		out := map[string]int{}
+		for _, x := range d.Totals {
+			out[x.Ticket] += x.Minutes
+		}
+		return out
+	}
+	for n := 0; n < 300; n++ {
+		ev, ms := randomDay(r, day0)
+		cut := day0.Add(time.Duration(r.Intn(24*60)) * time.Minute)
+		whole := For(day0, ev, ms, Defaults)
+		before, after := Defaults, Defaults
+		before.Until, after.Since = cut.Add(-time.Nanosecond), cut
+		b, a := For(day0, ev, ms, before), For(day0, ev, ms, after)
+		got := sum(b)
+		for k, v := range sum(a) {
+			got[k] += v
+		}
+		for k, v := range sum(whole) {
+			if got[k] != v {
+				t.Fatalf("day %d cut at %s: %s has %dm before and after, %dm whole", n, cut.Format("15:04"), k, got[k], v)
+			}
+		}
+		for _, s := range a.Stretches {
+			if s.From.Before(cut) {
+				t.Fatalf("day %d: a stretch from %s is before the cut at %s", n, s.From.Format("15:04"), cut.Format("15:04"))
+			}
+		}
+	}
+}

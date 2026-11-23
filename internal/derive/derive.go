@@ -52,6 +52,7 @@ type Settings struct {
 	Blocks    []Block
 	Agent     AgentMode // "" is AgentFill
 	Until     time.Time // no minute after the one it falls in is counted; zero for no limit
+	Since     time.Time // no minute before it is counted, as if the day began there; zero for no limit
 }
 
 // Defaults are the rules as prototyped.
@@ -309,6 +310,11 @@ func For(start time.Time, events []Event, meetings []Meeting, s Settings) Day {
 	own, agentMin = own[pad:n-pad], agentMin[pad:n-pad]
 	if !s.Until.IsZero() {
 		for i := max(idx(s.Until)+1-pad, 0); i < len(own); i++ {
+			own[i], agentMin[i] = none, false
+		}
+	}
+	if !s.Since.IsZero() {
+		for i := 0; i < min(idx(s.Since)-pad, len(own)); i++ {
 			own[i], agentMin[i] = none, false
 		}
 	}
