@@ -55,6 +55,8 @@ func ThemeNamed(name string) int {
 func style(c rgb) lipgloss.Style  { return lipgloss.NewStyle().Foreground(lipgloss.Color(c.String())) }
 func fg(c rgb, s string) string   { return style(c).Render(s) }
 func bold(c rgb, s string) string { return style(c).Bold(true).Render(s) }
+
+func strike(c rgb, s string) string { return style(c).Strikethrough(true).Render(s) }
 func on(c rgb, bg *rgb, s string) string {
 	st := style(c)
 	if bg != nil {

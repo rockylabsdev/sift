@@ -85,7 +85,7 @@ func (m Model) laneLayout() (evRows int, sep bool, shown int) {
 
 // labelled is whether the day box gives meeting names a row of their own.
 func (m Model) labelled() bool {
-	for _, s := range m.stretches() {
+	for _, s := range m.list {
 		if s.Kind == derive.InMeet {
 			return true
 		}
@@ -110,7 +110,8 @@ func (m Model) dayBox(w int) []string {
 	from, to := m.span()
 	g := w - 2 - labelW - 1
 	col := func(c int) (int, int) { return from + c*(to-from)/g, from + (c+1)*(to-from)/g }
-	sel, hasSel := m.selected()
+	selRow, hasSel := m.selectedRow()
+	sel := selRow.Stretch
 	// on a live day the strip ends at now, marked by a tinted column
 	nowCol, nowMin := g, m.dayLen()
 	if m.live() {
@@ -143,7 +144,7 @@ func (m Model) dayBox(w int) []string {
 			}
 		}
 	}
-	row := fg(th.dim, string(axis))
+	axisRow := fg(th.dim, string(axis))
 	if nowCol < g {
 		var b strings.Builder
 		for c, r := range axis {
@@ -153,9 +154,9 @@ func (m Model) dayBox(w int) []string {
 			}
 			b.WriteString(on(tone, bgAt(c), string(r)))
 		}
-		row = b.String()
+		axisRow = b.String()
 	}
-	out = append(out, strings.Repeat(" ", labelW)+row)
+	out = append(out, strings.Repeat(" ", labelW)+axisRow)
 
 	if len(m.stretches()) == 0 {
 		return append(out, "", " "+fg(th.muted, "No evidence on "+m.in.Start.Format("Mon 2 Jan")+"."),
@@ -293,10 +294,10 @@ func (m Model) dayBox(w int) []string {
 	// Each column shows the meeting at its middle minute, as the strip
 	// samples it. A meeting that runs into the next ends a column early, so
 	// back-to-back meetings read as separate bars.
-	var meets []derive.Stretch
-	for _, s := range m.stretches() {
-		if s.Kind == derive.InMeet {
-			meets = append(meets, s)
+	var meets []row
+	for _, r := range m.list {
+		if r.Kind == derive.InMeet {
+			meets = append(meets, r)
 		}
 	}
 	meetAt := make([]int, g)
@@ -307,6 +308,13 @@ func (m Model) dayBox(w int) []string {
 			if mid := (a + z) / 2; mid >= m.minute(s.From) && mid < m.minute(s.To) {
 				meetAt[c] = i
 			}
+		}
+	}
+	for c := range meetAt {
+		// a skipped meeting is an outline wherever the evidence left the column empty
+		a, z := col(c)
+		if i := meetAt[c]; i >= 0 && meets[i].skipped && m.effK[min((a+z)/2, len(m.effK)-1)] == "" {
+			other[c] = on(th.dim, bgAt(c), "▱")
 		}
 	}
 	for c := 1; c+1 < g; c++ {
@@ -328,8 +336,11 @@ func (m Model) dayBox(w int) []string {
 			continue
 		}
 		tone := th.amber
-		if t := m.in.Decisions.Assign[draft.ID(s)]; t != "" {
+		if t := m.in.Decisions.Assign[draft.ID(s.Stretch)]; t != "" {
 			tone = m.hue(t)
+		}
+		if s.skipped {
+			tone = th.dim
 		}
 		for j, r := range name {
 			labels[c0+j] = on(tone, bgAt(c0+j), string(r))
@@ -452,7 +463,23 @@ func (m Model) stretchBox(w, h int) []string {
 	var rows []string
 	var title, detail string
 	offSum := 0
-	for i, s := range m.stretches() {
+	for i, r := range m.list {
+		s := r.Stretch
+		if r.skipped {
+			line := m.clockT(s.From) + "–" + m.clockT(s.To) + " " + fg(th.dim, "▱") + " " + pad(strike(th.dim, s.Meeting), whatW)
+			for range cols {
+				line += fg(th.faint, fmt.Sprintf("%*s", cw, "·"))
+			}
+			line += fg(th.dim, fmt.Sprintf("%*s", lastW, "skipped"))
+			if i == m.cur {
+				line = on(th.text, &th.sel, pad(bold(th.text, "›")+fg(th.text, line), iw))
+				detail = fg(th.muted, s.Meeting+" · "+dur(s.Minutes())) + "\n" + fg(th.muted, "meeting · skipped, so its time goes to the evidence · ") + fg(th.text, "x") + fg(th.muted, " counts it again")
+			} else {
+				line = " " + fg(th.text, line)
+			}
+			rows = append(rows, line)
+			continue
+		}
 		per := map[string]int{}
 		off, mark, name := 0, " ", ""
 		assigned := m.in.Decisions.Assign[draft.ID(s)]
@@ -476,7 +503,7 @@ func (m Model) stretchBox(w, h int) []string {
 				more += fg(th.dim, " · its title names ") + bold(m.hue(sg), sg)
 			}
 			if e := m.eventsIn(s); e > 0 {
-				more += fg(th.amber, " · "+plural(e, "event")+" fired during it")
+				more += fg(th.amber, " · "+plural(e, "event")+" fired during it") + fg(th.muted, "; x if you were not in it")
 			}
 		case derive.Silence:
 			if assigned == "" {
@@ -563,7 +590,7 @@ func (m Model) stretchBox(w, h int) []string {
 		more, rows = len(rows)-room, rows[:max(room, 0)]
 	}
 	body = append(body, rows...)
-	if len(m.stretches()) == 0 {
+	if len(m.list) == 0 {
 		body = append(body, " "+fg(th.dim, "Nothing to review yet."))
 	}
 	if hand != "" {
@@ -585,7 +612,7 @@ func (m Model) stretchBox(w, h int) []string {
 	}
 	t, dt, _ := strings.Cut(detail, "\n")
 	body = append(body, " "+t, " "+dt)
-	right := fg(th.dim, fmt.Sprintf("%d of %d", min(m.cur+1, len(m.stretches())), len(m.stretches())))
+	right := fg(th.dim, fmt.Sprintf("%d of %d", min(m.cur+1, len(m.list)), len(m.list)))
 	if extra := len(m.tickets) - len(cols); extra > 0 {
 		right = fg(th.dim, fmt.Sprintf("%d tickets in the draft only · ", extra)) + right
 	}
@@ -603,7 +630,8 @@ func ansiCut(s string, w int) string {
 
 func (m Model) inspectBox(w, h int) []string {
 	th := m.theme_()
-	s, ok := m.selected()
+	r, ok := m.selectedRow()
+	s := r.Stretch
 	if !ok {
 		return th.box(2, "inspect", "", true, w, h, []string{" " + fg(th.dim, "Nothing to inspect.")})
 	}
@@ -627,7 +655,12 @@ func (m Model) inspectBox(w, h int) []string {
 	head := " " + bold(th.text, m.clockT(s.From)+"–"+m.clockT(s.To)) + fg(th.muted, " · "+dur(s.Minutes())+" · ")
 	switch s.Kind {
 	case derive.InMeet:
-		head += fg(th.amber, s.Meeting) + fg(th.muted, " · meeting · ") + m.assignedTo(assigned)
+		head += fg(th.amber, s.Meeting) + fg(th.muted, " · meeting · ")
+		if r.skipped {
+			head += fg(th.muted, "skipped")
+		} else {
+			head += m.assignedTo(assigned)
+		}
 	case derive.Silence:
 		head += fg(th.muted, "gap · no evidence · ") + m.assignedTo(assigned)
 	default:
@@ -955,12 +988,17 @@ func (m Model) View() tea.View {
 			}
 			status = fg(th.amber, status+" ")
 		}
-		keys := " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("r", "retag") + key("+ −", "adjust") + key("c", "confirm") + key("[ ]", "day") + key("T", th.Name) + key("q", "quit")
+		// x skips a meeting and r retags work, so the slot shows the one that applies
+		act := key("r", "retag")
+		if r, _ := m.selectedRow(); r.Kind == derive.InMeet {
+			act = key("x", "skip")
+		}
+		keys := " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + act + key("+ −", "adjust") + key("c", "confirm") + key("[ ]", "day") + key("T", th.Name) + key("q", "quit")
 		if m.dr.Confirmed {
 			keys = " " + key("↑↓", "select") + key("e", "inspect") + key("[ ]", "day") + key("T", th.Name) + key("q", "quit") + fg(th.muted, "confirmed, read-only   ")
 		}
 		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && !m.dr.Confirmed {
-			keys = " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + key("r", "retag") + key("+−", "adjust") + key("c", "confirm") + key("[]", "day") + key("q", "quit")
+			keys = " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + act + key("+−", "adjust") + key("c", "confirm") + key("[]", "day") + key("q", "quit")
 		}
 		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && m.msg == "" && m.err == nil {
 			status = ""

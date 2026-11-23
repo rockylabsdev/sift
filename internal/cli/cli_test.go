@@ -434,4 +434,12 @@ func TestASkippedMeetingGivesItsMinutesBackToTheEvidence(t *testing.T) {
 	if _, _, data := h.envelope("draft", "--date", "2026-11-10"); data["meetings"] != "calendar: 0 meetings, 1 left out" {
 		t.Fatalf("draft says %q", data["meetings"])
 	}
+	r := &run{Env: Env{Getenv: func(k string) string { return h.env[k] }, Now: func() time.Time { return h.now }}, withCalendar: true}
+	r.fetch = r.fetchFeed
+	day := time.Date(2026, 11, 10, 0, 0, 0, 0, time.Local)
+	source{r}.Refresh(day)
+	in, err := source{r}.Load(day)
+	if err != nil || len(in.Skipped) != 1 || in.Skipped[0].Title != "1:1 with Sam" || in.Skipped[0].ID != "sync@09:00" {
+		t.Fatalf("the review was handed skipped meetings %+v, %v", in.Skipped, err)
+	}
 }

@@ -107,7 +107,7 @@ func (s source) loadAs(day time.Time, edit func([]evidence.Retag) []evidence.Ret
 	}
 	now := s.r.Now()
 	in := tui.Input{Start: l.Start, Events: l.Events, Day: l.Day, Decisions: l.Decisions,
-		Round: l.Config.Round, IdleGap: l.Config.IdleGap, Meetings: s.note(l), Pending: l.Calendar.Source == calendar.Pending,
+		Round: l.Config.Round, IdleGap: l.Config.IdleGap, Meetings: s.note(l), Pending: l.Calendar.Source == calendar.Pending, Skipped: l.Skipped,
 		Today: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()), Tracker: s.Tracker(), Now: now}
 	sessions := map[string]bool{}
 	for _, e := range l.Events {
