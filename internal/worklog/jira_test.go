@@ -37,7 +37,7 @@ func TestSyncThroughJira(t *testing.T) {
 
 	s := worklog.Store{Dir: t.TempDir()}
 	started := time.Date(2026, 11, 10, 9, 0, 0, 0, time.FixedZone("CET", 3600))
-	if _, err := s.Confirm("2026-11-10", []worklog.Worklog{
+	if _, err := s.Confirm("2026-11-10", 0, []worklog.Worklog{
 		{Ticket: "WEB-1", Started: started, Minutes: 90},
 		{Ticket: "WEB-2", Started: started, Minutes: 15},
 	}, false); err != nil {

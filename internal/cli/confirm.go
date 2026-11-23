@@ -49,14 +49,18 @@ func (r *run) worklogs() (worklog.Store, error) {
 // Confirmation is what confirm reports.
 type Confirmation struct {
 	Date      string            `json:"date"`
-	Worklogs  []worklog.Worklog `json:"worklogs"`
+	Worklogs  []worklog.Worklog `json:"worklogs"` // the day's, every part
 	Sent      int               `json:"sent"`
 	Remaining []worklog.Worklog `json:"remaining"`
-	Already   bool              `json:"already,omitempty"`
+	Already   bool              `json:"already,omitempty"` // nothing new since the last send
+	Minutes   int               `json:"minutes"`           // what this confirm sent
+	Through   time.Time         `json:"through,omitzero"`  // the watermark it sent through
 }
 
-// confirmDay accepts date's draft: one worklog per ticket of at least a
-// minute, the day frozen as confirmed, then a send. It is safe to repeat.
+// confirmDay sends what date has ready since its last send, one worklog
+// per ticket of at least a minute, as the day's next part, and sets the
+// watermark: time before it is sent and stays as it was. Later work builds
+// a new draft. It is safe to repeat: with nothing new it sends nothing.
 func (r *run) confirmDay(date string) (Confirmation, error) {
 	l, err := r.load(date)
 	if err != nil {
@@ -70,20 +74,30 @@ func (r *run) confirmDay(date string) (Confirmation, error) {
 	if err != nil {
 		return c, err
 	}
-	if dr.Confirmed {
-		c.Already = true
+	ready := dr.Sendable()
+	if len(ready) == 0 {
+		c.Already, c.Through = true, dr.Through
 	} else {
+		now := r.Now()
+		part := len(l.Decisions.Sent)
+		// the draft counts the minute now is in, so the watermark is the next
+		c.Through = minTime(now.Truncate(time.Minute).Add(time.Minute), l.Start.AddDate(0, 0, 1))
 		var ws []worklog.Worklog
-		for _, w := range dr.Sendable() {
+		for _, w := range ready {
 			ws = append(ws, worklog.Worklog{Date: key, Ticket: w.Ticket, Started: w.Started, Minutes: w.Minutes})
+			c.Minutes += w.Minutes
 		}
-		if _, err := store.Confirm(key, ws, none); err != nil {
+		if _, err := store.Confirm(key, part, ws, none); err != nil {
 			return c, err
 		}
 		if _, err := l.Store.Update(key, func(d *draft.Decisions) error {
-			d.Confirmed = &draft.Confirmed{At: r.Now().UTC().Truncate(time.Second), Worklogs: dr.Sendable()}
+			if len(d.Sent) > part {
+				return nil // another confirm recorded this part first
+			}
+			d.Sent = append(d.Sent, draft.Send{At: now.UTC().Truncate(time.Second), Through: c.Through, Worklogs: dr.Tally()})
+			d.Adjust = nil // what it changed was sent
 			return nil
-		}); err != nil && !errors.Is(err, draft.ErrConfirmed) {
+		}); err != nil {
 			return c, err
 		}
 	}
@@ -152,11 +166,14 @@ func writeConfirmation(w io.Writer, c Confirmation) {
 	for _, x := range c.Worklogs {
 		total += x.Minutes
 	}
-	verb := "Confirmed"
-	if c.Already {
-		verb = "Already confirmed"
+	switch {
+	case c.Already && len(c.Worklogs) == 0:
+		fmt.Fprintf(w, "Nothing to send on %s.\n", c.Date)
+	case c.Already:
+		fmt.Fprintf(w, "Nothing new to send on %s since %s. Sent so far: %s, %s.\n", c.Date, c.Through.Local().Format("15:04"), plural(len(c.Worklogs), "worklog"), dur(total))
+	default:
+		fmt.Fprintf(w, "Sent %s of %s through %s. The day so far: %s, %s.\n", dur(c.Minutes), c.Date, c.Through.Local().Format("15:04"), plural(len(c.Worklogs), "worklog"), dur(total))
 	}
-	fmt.Fprintf(w, "%s %s: %s, %s.\n", verb, c.Date, plural(len(c.Worklogs), "worklog"), dur(total))
 	for _, x := range c.Worklogs {
 		fmt.Fprintf(w, "  %-10s %8s  %s\n", x.Ticket, dur(x.Minutes), x.State)
 	}
@@ -334,4 +351,11 @@ func (r *run) log(args []string) (any, func(io.Writer), error) {
 		}
 		fmt.Fprintf(w, "%-10s  %-10s %8s\n", "total", "", dur(total))
 	}, nil
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
 }

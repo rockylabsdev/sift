@@ -99,8 +99,8 @@ func (r *run) retagPrompt(dir string, in hookInput, e evidence.Event) string {
 	if err != nil {
 		return msg
 	}
-	if l.Decisions.Confirmed != nil {
-		return msg + " Today is already confirmed, so today's worklogs stay as they were sent."
+	if t := l.Decisions.Through(); !t.IsZero() {
+		msg += " Time sent through " + t.In(l.Start.Location()).Format("15:04") + " stays as it was sent."
 	}
 	for _, w := range draft.Of(l.Day, l.Decisions, l.Config.Round).Worklogs {
 		if w.Ticket == key {

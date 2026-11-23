@@ -1,5 +1,5 @@
-// Package worklog is Sift's outbox: one worklog per ticket per confirmed
-// day, kept in $dataDir/worklogs.json until the tracker takes it.
+// Package worklog is Sift's outbox: one worklog per ticket for each part a
+// day is sent in, kept in $dataDir/worklogs.json until the tracker takes it.
 //
 // Every write (Confirm, and each outcome Sync records) happens under one
 // flock on sync.lock (Punchcard ADR 0002). Sync holds it across its POSTs,
@@ -45,10 +45,13 @@ const (
 
 func (s State) owed() bool { return s == Pending || s == Failed }
 
-// Worklog is one ticket's time on one day. A worklog is named by its Date
-// and Ticket: there is never a second for the same pair.
+// Worklog is one ticket's time in one part of a day. A worklog is named by
+// its Date, Part and Ticket: there is never a second for the same three.
+// Each part's worklog starts after the part before it ends, so the
+// tracker can tell them apart (FindWorklog matches on the start).
 type Worklog struct {
-	Date     string    `json:"date"` // YYYY-MM-DD, the confirmed day
+	Date     string    `json:"date"`           // YYYY-MM-DD, the confirmed day
+	Part     int       `json:"part,omitempty"` // which send of the day, from 0
 	Ticket   string    `json:"ticket"`
 	Started  time.Time `json:"started"`
 	Minutes  int       `json:"minutes"`
@@ -62,8 +65,9 @@ type Worklog struct {
 	Attempted bool `json:"attempted,omitempty"`
 }
 
-// Version is the worklogs.json schema this binary writes and reads.
-const Version = 1
+// Version is the worklogs.json schema this binary writes and reads. 2
+// adds parts; a sift that reads only 1 would take a day's parts for one.
+const Version = 2
 
 const (
 	FileName = "worklogs.json"
@@ -85,13 +89,14 @@ type file struct {
 	Worklogs []Worklog `json:"worklogs"`
 }
 
-// Confirm records ws as day's worklogs and returns each as it now stands,
-// in the order given. Running it again converges: an unsent worklog of
-// that day is replaced, one no longer in ws is dropped, and a synced one
-// is kept as the tracker has it (it comes back synced, perhaps with other
-// minutes than asked). New worklogs are pending, or local when local is
-// set. Each w.Date must be day or empty.
-func (s Store) Confirm(day string, ws []Worklog, local bool) ([]Worklog, error) {
+// Confirm records ws as the worklogs of part of day and returns each as it
+// now stands, in the order given. Running it again converges: an unsent
+// worklog of that part is replaced, one no longer in ws is dropped, and a
+// synced one is kept as the tracker has it (it comes back synced, perhaps
+// with other minutes than asked). Other parts are never touched. New
+// worklogs are pending, or local when local is set. Each w.Date must be
+// day or empty.
+func (s Store) Confirm(day string, part int, ws []Worklog, local bool) ([]Worklog, error) {
 	if _, err := time.Parse(time.DateOnly, day); err != nil {
 		return nil, fmt.Errorf("day %q is not YYYY-MM-DD", day)
 	}
@@ -123,7 +128,7 @@ func (s Store) Confirm(day string, ws []Worklog, local bool) ([]Worklog, error) 
 	synced := map[string]Worklog{}
 	kept := all[:0]
 	for _, w := range all {
-		if w.Date != day {
+		if w.Date != day || w.Part != part {
 			kept = append(kept, w)
 		} else if w.State == Synced || w.Attempted {
 			synced[w.Ticket] = w // the tracker has it, or may: keep it as it is
@@ -136,7 +141,7 @@ func (s Store) Confirm(day string, ws []Worklog, local bool) ([]Worklog, error) 
 			out = append(out, old)
 			continue
 		}
-		w.Date, w.State, w.RemoteID, w.Error, w.SyncedAt = day, Pending, "", "", time.Time{}
+		w.Date, w.Part, w.State, w.RemoteID, w.Error, w.SyncedAt = day, part, Pending, "", "", time.Time{}
 		if local {
 			w.State = Local
 		}
@@ -298,6 +303,9 @@ func byDay(ws []Worklog) {
 	sort.SliceStable(ws, func(i, j int) bool {
 		if ws[i].Date != ws[j].Date {
 			return ws[i].Date < ws[j].Date
+		}
+		if ws[i].Part != ws[j].Part {
+			return ws[i].Part < ws[j].Part
 		}
 		return ws[i].Ticket < ws[j].Ticket
 	})

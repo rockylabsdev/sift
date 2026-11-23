@@ -74,6 +74,9 @@ func (r *run) block(args []string) (any, func(io.Writer), error) {
 	}
 	b := draft.Block{Ticket: key, From: from, To: to}
 	dec, err := draft.Store{Dir: dir}.Update(start.Format("2006-01-02"), func(d *draft.Decisions) error {
+		if err := d.Sending(b.From); err != nil {
+			return usageError{err.Error()}
+		}
 		kept := d.Blocks[:0]
 		found := false
 		for _, x := range d.Blocks {

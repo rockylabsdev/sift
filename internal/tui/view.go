@@ -33,7 +33,7 @@ func (m Model) hue(t string) rgb {
 // at least eight hours.
 func (m Model) span() (from, to int) {
 	from, to = 8*60, 18*60
-	if s := m.stretches(); len(s) > 0 {
+	if s := append(append([]derive.Stretch{}, m.in.Before.Stretches...), m.stretches()...); len(s) > 0 {
 		from = m.minute(s[0].From) / 60 * 60
 		to = (m.minute(s[len(s)-1].To) + 59) / 60 * 60
 	}
@@ -60,6 +60,38 @@ func (m Model) clock(min int) string {
 }
 
 func (m Model) clockT(t time.Time) string { return t.In(m.in.Start.Location()).Format("15:04") }
+
+// sentBefore is the minute of the latest watermark: minutes before it are
+// sent. Zero when nothing is.
+func (m Model) sentBefore() int {
+	if t := m.in.Decisions.Through(); !t.IsZero() {
+		return m.minute(t)
+	}
+	return 0
+}
+
+// sentLabel names the latest send: the watermark's time, or, for a day
+// sent through its end, when it was sent.
+func (m Model) sentLabel() string {
+	s := m.in.Decisions.Sent
+	if len(s) == 0 {
+		return ""
+	}
+	if last := s[len(s)-1]; !last.Through.Before(m.in.Start.AddDate(0, 0, 1)) {
+		return "sent " + last.At.In(m.in.Start.Location()).Format("Mon 15:04")
+	}
+	return "sent " + m.clockT(m.in.Decisions.Through())
+}
+
+// sentMinutes is what was sent for t, every send added up.
+func (m Model) sentMinutes(t string) int {
+	for _, w := range m.dr.Sent {
+		if w.Ticket == t {
+			return w.Minutes
+		}
+	}
+	return 0
+}
 
 // --- 1 day ---
 
@@ -123,10 +155,21 @@ func (m Model) dayBox(w int) []string {
 		if c == nowCol {
 			return &th.border
 		}
-		if mid := (a + b) / 2; hasSel && mid >= m.minute(sel.From) && mid < m.minute(sel.To) {
+		if mid := (a + b) / 2; hasSel && !selRow.sent && mid >= m.minute(sel.From) && mid < m.minute(sel.To) {
 			return &th.sel
 		}
 		return nil
+	}
+	// sent time is grey, up to the watermark column
+	sentCol, cut := -1, m.sentBefore()
+	if cut > from {
+		sentCol = min((cut-from)*g/(to-from), g-1)
+	}
+	tone := func(c int, h rgb) rgb {
+		if a, z := col(c); (a+z)/2 < cut {
+			return th.dim
+		}
+		return h
 	}
 
 	var out []string
@@ -144,6 +187,18 @@ func (m Model) dayBox(w int) []string {
 			}
 		}
 	}
+	if sentCol >= 0 {
+		mark := []rune("┊ " + m.sentLabel())
+		at := sentCol
+		if at+len(mark) > g {
+			mark = []rune(m.sentLabel() + " ┊")
+			at = max(sentCol-len(mark)+1, 0)
+		}
+		for i := max(at-1, 0); i < min(at+len(mark)+1, g); i++ {
+			axis[i] = ' '
+		}
+		copy(axis[at:], mark)
+	}
 	axisRow := fg(th.dim, string(axis))
 	if nowCol < g {
 		var b strings.Builder
@@ -158,7 +213,7 @@ func (m Model) dayBox(w int) []string {
 	}
 	out = append(out, strings.Repeat(" ", labelW)+axisRow)
 
-	if len(m.stretches()) == 0 {
+	if len(m.list) == 0 {
 		return append(out, "", " "+fg(th.muted, "No evidence on "+m.in.Start.Format("Mon 2 Jan")+"."),
 			" "+fg(th.dim, "Prompts you type in Claude Code are recorded here as you work."))
 	}
@@ -214,7 +269,7 @@ func (m Model) dayBox(w int) []string {
 			case r == 0:
 				label = " " + bold(h, t)
 			case r == 1:
-				label = " " + fg(th.text, dur(m.worklog(t).Minutes))
+				label = " " + fg(th.text, dur(m.worklog(t).Minutes+m.sentMinutes(t)))
 			}
 			var b strings.Builder
 			for c := 0; c < g; c++ {
@@ -228,13 +283,13 @@ func (m Model) dayBox(w int) []string {
 				if ch == 0x2800 {
 					ch = ' '
 				}
-				b.WriteString(on(h, bgAt(c), string(ch)))
+				b.WriteString(on(tone(c, h), bgAt(c), string(ch)))
 			}
 			out = append(out, pad(label, labelW)+b.String())
 		}
 		label := ""
 		if evRows == 1 {
-			label = " " + fg(th.text, dur(m.worklog(t).Minutes))
+			label = " " + fg(th.text, dur(m.worklog(t).Minutes+m.sentMinutes(t)))
 		}
 		var b strings.Builder
 		for c := 0; c < g; c++ {
@@ -253,10 +308,12 @@ func (m Model) dayBox(w int) []string {
 				}
 			}
 			switch {
+			case c == sentCol:
+				b.WriteString(on(th.dim, bgAt(c), "┊"))
 			case own*2 >= max(z-a, 1) && agent*2 > own:
-				b.WriteString(on(h, bgAt(c), "┅"))
+				b.WriteString(on(tone(c, h), bgAt(c), "┅"))
 			case own*2 >= max(z-a, 1):
-				b.WriteString(on(h, bgAt(c), "━"))
+				b.WriteString(on(tone(c, h), bgAt(c), "━"))
 			default:
 				b.WriteString(on(th.faint, bgAt(c), "─"))
 			}
@@ -277,6 +334,9 @@ func (m Model) dayBox(w int) []string {
 		if t != "" {
 			tone = m.hue(t)
 		}
+		if mid < cut {
+			tone = th.dim
+		}
 		switch {
 		case k == derive.InMeet:
 			other[c] = on(tone, bgAt(c), "▰")
@@ -286,7 +346,7 @@ func (m Model) dayBox(w int) []string {
 			}
 			other[c] = on(tone, bgAt(c), "░")
 		case k == derive.Work && t == "":
-			other[c] = on(th.amber, bgAt(c), "?")
+			other[c] = on(tone, bgAt(c), "?")
 		default:
 			other[c] = on(th.faint, bgAt(c), " ")
 		}
@@ -295,6 +355,11 @@ func (m Model) dayBox(w int) []string {
 	// samples it. A meeting that runs into the next ends a column early, so
 	// back-to-back meetings read as separate bars.
 	var meets []row
+	for _, s := range m.in.Before.Stretches {
+		if s.Kind == derive.InMeet {
+			meets = append(meets, row{Stretch: s, sent: true})
+		}
+	}
 	for _, r := range m.list {
 		if r.Kind == derive.InMeet {
 			meets = append(meets, r)
@@ -341,7 +406,7 @@ func (m Model) dayBox(w int) []string {
 		if t := m.in.Decisions.Assign[draft.ID(s.Stretch)]; t != "" {
 			tone = m.hue(t)
 		}
-		if s.skipped {
+		if s.skipped || s.sent {
 			tone = th.dim
 		}
 		for j, r := range name {
@@ -354,6 +419,9 @@ func (m Model) dayBox(w int) []string {
 	}
 	for c := nowCol + 1; c < g; c++ {
 		other[c] = on(th.faint, bgAt(c), " ")
+	}
+	if sentCol >= 0 {
+		other[sentCol] = on(th.dim, bgAt(sentCol), "┊")
 	}
 	out = append(out, pad(" "+fg(th.dim, "other"), labelW)+strings.Join(other, ""))
 
@@ -465,8 +533,28 @@ func (m Model) stretchBox(w, h int) []string {
 	var rows []string
 	var title, detail string
 	offSum := 0
+	selLine := 0
 	for i, r := range m.list {
 		s := r.Stretch
+		if i == m.cur {
+			selLine = len(rows)
+		}
+		if r.sent {
+			th := m.theme_()
+			line := fg(th.dim, fmt.Sprintf("%-11s", "sent")) + " " + fg(th.dim, "▸") + " " + pad(fg(th.dim, m.sentLabel()+" · locked · e shows it"), whatW)
+			for _, t := range cols {
+				line += cell(m.sentMinutes(t), cw, th.dim)
+			}
+			line += fg(th.dim, fmt.Sprintf("%*s", lastW, "locked"))
+			if i == m.cur {
+				line = on(th.text, &th.sel, pad(bold(th.text, "›")+line, iw))
+				detail = fg(th.text, strings.ToUpper(m.sentLabel()[:1])+m.sentLabel()[1:]+" · "+dur(m.dr.SentTotal)) + "\n" + fg(th.muted, "locked: change sent time in Jira · ") + fg(th.text, "e") + fg(th.muted, " shows what was sent")
+			} else {
+				line = " " + line
+			}
+			rows = append(rows, line, " "+fg(th.faint, strings.Repeat("─", iw-2)))
+			continue
+		}
 		if r.skipped {
 			line := m.clockT(s.From) + "–" + m.clockT(s.To) + " " + fg(th.dim, "▱") + " " + pad(strike(th.dim, s.Meeting), whatW)
 			for range cols {
@@ -585,7 +673,7 @@ func (m Model) stretchBox(w, h int) []string {
 	if hand != "" {
 		room--
 	}
-	first := max(m.cur-room+1, 0)
+	first := max(selLine-room+1, 0)
 	rows = rows[min(first, len(rows)):]
 	more := 0
 	if len(rows) > room {
@@ -603,9 +691,17 @@ func (m Model) stretchBox(w, h int) []string {
 		hidden := fmt.Sprintf("%d above · %d below ", first, more)
 		rule = " " + fg(th.dim, hidden) + fg(th.faint, strings.Repeat("─", max(iw-2-lipgloss.Width(hidden), 0)))
 	}
-	foot := " " + fg(th.dim, fmt.Sprintf("%-11s", "total")) + "   " + pad("", whatW)
+	total := "total"
+	if t := m.in.Decisions.Through(); !t.IsZero() {
+		total = "since " + m.clockT(t)
+	}
+	foot := " " + fg(th.dim, fmt.Sprintf("%-11s", total)) + "   " + pad("", whatW)
 	for _, t := range cols {
-		foot += bold(m.hue(t), fmt.Sprintf("%*s", cw, dur(m.worklog(t).Minutes)))
+		if n := m.worklog(t).Minutes; n > 0 {
+			foot += bold(m.hue(t), fmt.Sprintf("%*s", cw, dur(n)))
+		} else {
+			foot += fg(th.faint, fmt.Sprintf("%*s", cw, "·"))
+		}
 	}
 	foot += bold(th.amber, fmt.Sprintf("%*s", lastW, dur(offSum)))
 	body = append(body, rule, foot)
@@ -636,6 +732,9 @@ func (m Model) inspectBox(w, h int) []string {
 	s := r.Stretch
 	if !ok {
 		return th.box(2, "inspect", "", true, w, h, []string{" " + fg(th.dim, "Nothing to inspect.")})
+	}
+	if r.sent {
+		return m.sentBox(w, h)
 	}
 	iw := w - 2
 	var evs []int // the user's own events; agent activity is summed below
@@ -822,13 +921,63 @@ func keysOf[T any](m map[string]T) []string {
 
 // --- 3 draft ---
 
+// sentBox is the sent time, read-only: what each send sent, then the
+// stretches before the watermark as the evidence has them now.
+func (m Model) sentBox(w, h int) []string {
+	th := m.theme_()
+	var sent []string
+	for _, x := range m.dr.Sent {
+		sent = append(sent, bold(th.dim, x.Ticket)+fg(th.dim, " "+dur(x.Minutes)))
+	}
+	body := []string{" " + bold(th.text, m.sentLabel()) + fg(th.muted, " · read-only · ") + strings.Join(sent, fg(th.dim, " · ")), ""}
+	for _, s := range m.in.Before.Stretches {
+		what := ""
+		switch s.Kind {
+		case derive.InMeet:
+			what = "▰ " + s.Meeting
+		case derive.Silence:
+			what = "░ gap"
+		default:
+			var parts []string
+			for _, t := range m.tickets {
+				if n := s.Tickets[t]; n > 0 {
+					parts = append(parts, t+" "+dur(n))
+				}
+			}
+			if s.Unassigned > 0 {
+				parts = append(parts, "no ticket "+dur(s.Unassigned))
+			}
+			what = strings.Join(parts, " · ")
+		}
+		if a := m.in.Decisions.Assign[draft.ID(s)]; a != "" && s.Kind != derive.Work {
+			what += " → " + a
+		}
+		body = append(body, " "+fg(th.dim, m.clockT(s.From)+"–"+m.clockT(s.To)+"  "+what))
+	}
+	if len(body) > h-2 {
+		body = append(body[:h-3], " "+fg(th.dim, fmt.Sprintf("+ %d more", len(body)-(h-3))))
+	}
+	return th.box(2, "inspect · sent", fg(th.dim, fmt.Sprintf("%d stretches", len(m.in.Before.Stretches))), true, w, h, body)
+}
+
 func (m Model) draftBox(w, h int) []string {
 	th := m.theme_()
 	iw := w - 2
 	line := func(l, r string) string { return " " + spread(l, r, iw-2) }
 	u := m.dr.Unassigned
-	ruled := h-2 >= len(m.dr.Worklogs)*3+3
+	ruled := h-2 >= len(m.dr.Worklogs)*3+3+len(m.dr.Sent)+2
 	var body []string
+	if len(m.dr.Sent) > 0 {
+		body = append(body, line(bold(th.dim, m.sentLabel()), bold(th.dim, dur(m.dr.SentTotal))))
+		for _, wl := range m.dr.Sent {
+			st, why, _ := strings.Cut(m.sentLine(wl.Ticket), "\n")
+			body = append(body, line(fg(th.dim, "  "+wl.Ticket+" · ")+st, fg(th.dim, dur(wl.Minutes))))
+			if why != "" {
+				body = append(body, "    "+why)
+			}
+		}
+		body = append(body, " "+fg(th.faint, strings.Repeat("─", iw-2)))
+	}
 	for _, wl := range m.dr.Worklogs {
 		key := bold(m.hue(wl.Ticket), wl.Ticket)
 		if wl.ByHand != 0 {
@@ -846,9 +995,6 @@ func (m Model) draftBox(w, h int) []string {
 			sub = "incl. " + strings.Join(incl, ", ")
 		}
 		second := fg(th.muted, "from "+m.clockT(wl.Started)+"  ") + fg(th.dim, sub)
-		if m.dr.Confirmed {
-			second = fg(th.muted, "from "+m.clockT(wl.Started)+" · ") + m.sentLine(wl.Ticket)
-		}
 		body = append(body, line(key, bold(th.text, dur(wl.Minutes))))
 		for _, l := range strings.Split(second, "\n") {
 			body = append(body, " "+l)
@@ -857,26 +1003,22 @@ func (m Model) draftBox(w, h int) []string {
 			body = append(body, " "+fg(th.faint, strings.Repeat("─", iw-2)))
 		}
 	}
-	if len(m.dr.Worklogs) == 0 {
+	if len(m.dr.Worklogs) == 0 && len(m.dr.Sent) == 0 {
 		body = append(body, " "+fg(th.dim, "No worklogs."))
+	}
+	if len(m.dr.Worklogs) == 0 && len(m.dr.Sent) > 0 {
+		body = append(body, " "+fg(th.dim, "Nothing new since it was sent."))
 	}
 	if !ruled {
 		body = append(body, " "+fg(th.faint, strings.Repeat("─", iw-2)))
 	}
 	label := "ready to send"
-	if m.dr.Confirmed {
-		label = "confirmed"
-	}
 	body = append(body, line(bold(th.text, label), bold(th.text, dur(m.dr.Total))),
 		line(fg(th.muted, "unassigned"), fg(th.amber, dur(u.Meetings+u.Gaps+u.Ticketless))))
 	if m.in.Round > 0 {
 		body = append(body, " "+fg(th.dim, fmt.Sprintf("rounded to %dm per ticket", m.in.Round)))
 	}
-	title := "draft"
-	if m.dr.Confirmed {
-		title = "confirmed"
-	}
-	return th.box(3, title, fg(th.dim, plural(len(m.dr.Sendable()), "worklog")), false, w, h, body)
+	return th.box(3, "draft", fg(th.dim, plural(len(m.dr.Sendable()), "worklog")), false, w, h, body)
 }
 
 // ago says how far back the day is: today, yesterday, 3 days ago.
@@ -909,15 +1051,18 @@ func (m Model) header() string {
 	}
 	badge := fg(th.dim, "draft")
 	right := fmt.Sprintf("%s · %s to send ", plural(len(m.dr.Sendable()), "ticket"), dur(m.dr.Total))
+	if m.dr.SentTotal > 0 {
+		right = fmt.Sprintf("%s sent · %s to send ", dur(m.dr.SentTotal), dur(m.dr.Total))
+	}
+	past := !m.in.Today.IsZero() && m.in.Start.Before(m.in.Today)
 	switch {
-	case m.dr.Confirmed:
-		when := ""
-		if c := m.in.Decisions.Confirmed; c != nil && !c.At.IsZero() {
-			when = " " + c.At.In(m.in.Start.Location()).Format("Mon 15:04")
-		}
-		badge = on(th.bg, &th.focus, " confirmed"+when+" · read-only ")
-		right = fmt.Sprintf("%s · %s confirmed ", plural(len(m.dr.Sendable()), "worklog"), dur(m.dr.Total))
-	case !m.in.Today.IsZero() && m.in.Start.Before(m.in.Today) && len(m.stretches()) > 0:
+	case m.dr.State == draft.Sent:
+		badge = on(th.bg, &th.focus, " "+m.sentLabel()+" ")
+	case m.dr.State == draft.Partly && past:
+		badge = on(th.bg, &th.amber, " partly sent · waiting for review ")
+	case m.dr.State == draft.Partly:
+		badge = on(th.bg, &th.amber, " partly sent ")
+	case past && len(m.stretches()) > 0:
 		badge = on(th.bg, &th.amber, " waiting for review ")
 	}
 	brand := " " + bold(th.text, "sift") + " " + fg(th.focus, "▰") + "   " + day + "   " + badge
@@ -956,7 +1101,7 @@ func (m Model) View() tea.View {
 		if shown < len(m.tickets) {
 			topH++
 		}
-		if len(m.stretches()) == 0 {
+		if len(m.list) == 0 {
 			topH = 7
 		}
 		out = append(out, th.box(1, "day", fg(th.dim, "evidence and counted time"), false, m.w, topH, m.dayBox(m.w))...)
@@ -995,12 +1140,16 @@ func (m Model) View() tea.View {
 		if r, _ := m.selectedRow(); r.Kind == derive.InMeet {
 			act = key("x", "skip")
 		}
-		keys := " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + act + key("+ −", "adjust") + key("c", "confirm") + key("[ ]", "day") + key("T", th.Name) + key("q", "quit")
-		if m.dr.Confirmed {
-			keys = " " + key("↑↓", "select") + key("e", "inspect") + key("[ ]", "day") + key("T", th.Name) + key("q", "quit") + fg(th.muted, "confirmed, read-only   ")
+		send := key("c", "confirm")
+		if m.dr.State != draft.Open {
+			send = key("c", "send "+dur(m.dr.Total))
 		}
-		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && !m.dr.Confirmed {
-			keys = " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + act + key("+−", "adjust") + key("c", "confirm") + key("[]", "day") + key("q", "quit")
+		keys := " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + act + key("+ −", "adjust") + send + key("[ ]", "day") + key("T", th.Name) + key("q", "quit")
+		if m.dr.State == draft.Sent {
+			keys = " " + key("↑↓", "select") + key("e", "inspect") + key("[ ]", "day") + key("T", th.Name) + key("q", "quit") + fg(th.muted, "all sent; new work shows here   ")
+		}
+		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && m.dr.State != draft.Sent {
+			keys = " " + key("↑↓", "select") + key("e", "inspect") + key("t", "assign") + act + key("+−", "adjust") + send + key("[]", "day") + key("q", "quit")
 		}
 		if lipgloss.Width(keys)+lipgloss.Width(status) > m.w && m.msg == "" && m.err == nil {
 			status = ""
@@ -1008,7 +1157,7 @@ func (m Model) View() tea.View {
 		switch m.mode.(type) {
 		case nil:
 		case confirming:
-			keys = " " + bold(th.text, fmt.Sprintf("Confirm %s: %s, %s to %s?", m.in.Start.Format("Mon 2 Jan"), plural(len(m.dr.Sendable()), "worklog"), dur(m.dr.Total), m.src.Tracker())) +
+			keys = " " + bold(th.text, fmt.Sprintf("Send %s: %s, %s to %s?", m.in.Start.Format("Mon 2 Jan"), plural(len(m.dr.Sendable()), "worklog"), dur(m.dr.Total), m.src.Tracker())) +
 				fg(th.dim, "   y confirms · any other key cancels")
 			status = ""
 		default:

@@ -175,3 +175,24 @@ func TestConfirmSendsWhatIsThereAndLaterWorkCanBeSentToo(t *testing.T) {
 		t.Fatalf("a confirm with nothing new sent again: exit %d, %v, posts %v", code, data, f.posts)
 	}
 }
+
+func TestAPartlySentDayWaitsUntilWhatCameAfterIsSent(t *testing.T) {
+	h := newHarness(t)
+	h.jira(t)
+	h.prompt(9, 0, h.repo)
+	h.now = time.Date(2026, 11, 10, 10, 0, 0, 0, time.Local)
+	if code, _, _ := h.envelope("confirm"); code != 0 {
+		t.Fatalf("confirm: exit %d", code)
+	}
+	h.prompt(15, 0, h.repo)
+	h.now = time.Date(2026, 11, 11, 9, 0, 0, 0, time.Local)
+	if _, _, data := h.envelope("status"); len(data["waiting"].([]any)) != 1 {
+		t.Fatalf("waiting %v; want 2026-11-10, sent only through 10:01", data["waiting"])
+	}
+	if code, _, data := h.envelope("confirm", "--date", "2026-11-10"); code != 0 || data["minutes"].(float64) != 5 {
+		t.Fatalf("sending the rest: exit %d, %v", code, data)
+	}
+	if _, _, data := h.envelope("status"); len(data["waiting"].([]any)) != 0 {
+		t.Fatalf("waiting %v after everything was sent", data["waiting"])
+	}
+}

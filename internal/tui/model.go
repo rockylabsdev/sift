@@ -4,7 +4,6 @@
 package tui
 
 import (
-	"errors"
 	"regexp"
 	"slices"
 	"strings"
@@ -32,6 +31,9 @@ type Input struct {
 	Now       time.Time         // the clock when the day was loaded; zero means not live
 	Retags    []evidence.Retag  // the retags read into this day's sessions, in the order made
 	Skipped   []derive.Meeting  // meetings the user skipped, which Day leaves out
+	// Before is the day up to the latest watermark, derived as it is now:
+	// what was sent, drawn grey. Day holds only the time after it.
+	Before derive.Day
 }
 
 // Status is where one confirmed worklog stands.
@@ -119,29 +121,50 @@ func (m *Model) load(day time.Time) {
 		m.err = err
 		return
 	}
+	opening := !m.in.Start.Equal(in.Start)
 	m.in, m.err = in, nil
 	m.recompute()
 	m.cur = min(m.cur, max(len(m.list)-1, 0))
+	// a day opens on what is left to review, past the sent row
+	if opening && len(m.list) > 1 && m.list[0].sent {
+		m.cur = 1
+	}
 }
 
-// row is one line of the stretches list: a stretch of the day, or a
-// meeting the user skipped, kept at its time so x can count it again.
-// A skipped meeting's Stretch has its time, title and MeetingID, and
-// claims no minutes.
+// row is one line of the stretches list: a stretch of the day; a meeting
+// the user skipped, kept at its time so x can count it again (its Stretch
+// has its time, title and MeetingID, and claims no minutes); or, first,
+// everything already sent, folded into one locked row.
 type row struct {
 	derive.Stretch
 	skipped bool
+	sent    bool
 }
 
 func rowsOf(in Input) []row {
 	var out []row
+	if t := in.Decisions.Through(); !t.IsZero() {
+		from := in.Start
+		if s := in.Before.Stretches; len(s) > 0 {
+			from = s[0].From
+		}
+		out = append(out, row{Stretch: derive.Stretch{From: from, To: t}, sent: true})
+	}
 	for _, s := range in.Day.Stretches {
 		out = append(out, row{Stretch: s})
 	}
 	for _, mt := range in.Skipped {
 		out = append(out, row{Stretch: derive.Stretch{From: mt.From, To: mt.To, Kind: derive.InMeet, Meeting: mt.Title, MeetingID: mt.ID}, skipped: true})
 	}
-	slices.SortStableFunc(out, func(a, b row) int { return a.From.Compare(b.From) })
+	slices.SortStableFunc(out, func(a, b row) int {
+		switch {
+		case a.sent:
+			return -1
+		case b.sent:
+			return 1
+		}
+		return a.From.Compare(b.From)
+	})
 	return out
 }
 
@@ -150,20 +173,22 @@ func (m *Model) recompute() {
 	m.dr = draft.Of(m.in.Day, m.in.Decisions, m.in.Round)
 	m.list = rowsOf(m.in)
 	m.tickets = m.tickets[:0]
-	for _, w := range m.dr.Worklogs {
-		m.tickets = append(m.tickets, w.Ticket)
+	for _, w := range append(append([]draft.Worklog{}, m.dr.Sent...), m.dr.Worklogs...) {
+		if !slices.Contains(m.tickets, w.Ticket) {
+			m.tickets = append(m.tickets, w.Ticket)
+		}
 	}
 	n := m.dayLen()
 	m.effT, m.effK, m.effA = make([]string, n), make([]derive.Kind, n), make([]bool, n)
 	assigned := func(at time.Time) string {
-		for _, s := range m.in.Day.Stretches {
+		for _, s := range append(append([]derive.Stretch{}, m.in.Before.Stretches...), m.in.Day.Stretches...) {
 			if !at.Before(s.From) && at.Before(s.To) {
 				return m.in.Decisions.Assign[draft.ID(s)]
 			}
 		}
 		return ""
 	}
-	for _, r := range m.in.Day.Runs {
+	for _, r := range append(append([]derive.Run{}, m.in.Before.Runs...), m.in.Day.Runs...) {
 		t := r.Ticket
 		if t == "" {
 			t = assigned(r.From)
@@ -189,9 +214,10 @@ func (m Model) theme_() *Theme { return &Themes[m.theme] }
 
 func (m Model) stretches() []derive.Stretch { return m.in.Day.Stretches }
 
-// selected is the stretch under the cursor; a skipped meeting is not one.
+// selected is the stretch under the cursor; a skipped meeting and the sent
+// row are not ones.
 func (m Model) selected() (derive.Stretch, bool) {
-	if r, ok := m.selectedRow(); ok && !r.skipped {
+	if r, ok := m.selectedRow(); ok && !r.skipped && !r.sent {
 		return r.Stretch, true
 	}
 	return derive.Stretch{}, false
@@ -283,10 +309,6 @@ func (m Model) target(s derive.Stretch) string {
 
 func (m *Model) change(f func(*draft.Decisions) error) {
 	err := m.src.Update(m.in.Start, f)
-	if errors.Is(err, draft.ErrConfirmed) {
-		m.msg = "Confirmed days do not change."
-		return
-	}
 	if err != nil {
 		m.msg = err.Error()
 		return
@@ -353,7 +375,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // browse answers a key while no question is open.
 func (m Model) browse(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	s, ok := m.selected()
-	if r, _ := m.selectedRow(); r.skipped && slices.Contains([]string{"t", "enter", "+", "=", "-", "r"}, k.String()) {
+	r, _ := m.selectedRow()
+	switch changes := slices.Contains([]string{"t", "enter", "+", "=", "-", "r", "x"}, k.String()); {
+	case r.sent && changes:
+		m.msg = draft.SentError{Through: m.in.Decisions.Through().In(m.in.Start.Location())}.Error()
+		return m, nil
+	case r.skipped && changes && k.String() != "x":
 		m.msg = "You skipped this meeting, so it has no time. x counts it again."
 		return m, nil
 	}
@@ -362,12 +389,12 @@ func (m Model) browse(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.skip()
 	case "c":
 		switch {
-		case m.dr.Confirmed:
-			m.msg = "Already confirmed."
 		case m.in.Pending:
 			m.msg = "The calendar is still loading. Confirm once its meetings are in."
+		case len(m.dr.Sendable()) == 0 && m.dr.State == draft.Sent:
+			m.msg = "Nothing new to send."
 		case len(m.dr.Sendable()) == 0:
-			m.msg = "Nothing to confirm on this day."
+			m.msg = "Nothing to send on this day."
 		default:
 			m.mode = confirming{}
 		}

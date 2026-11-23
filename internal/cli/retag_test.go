@@ -138,8 +138,10 @@ func TestAConfirmedDayKeepsWhatItSent(t *testing.T) {
 	if code, out, _ := h.run("", "retag", "PUN-160", "--session", "s1"); code != 0 || !strings.Contains(out, "its PUN-142 time counts for PUN-160") {
 		t.Fatalf("exit %d: %q", code, out)
 	}
-	if got := h.minutes("--date", "2026-11-10"); got["PUN-142"] != 10 || got["PUN-160"] != 0 {
-		t.Fatalf("the confirmed day %v; want PUN-142 10m as sent", got)
+	_, _, data := h.envelope("draft", "--date", "2026-11-10")
+	sent := data["sent"].([]any)
+	if len(sent) != 1 || sent[0].(map[string]any)["ticket"] != "PUN-142" || sent[0].(map[string]any)["minutes"].(float64) != 10 || len(data["worklogs"].([]any)) != 0 {
+		t.Fatalf("the confirmed day sent %v, ready %v; want PUN-142 10m as sent and nothing more", sent, data["worklogs"])
 	}
 	if _, out, _ := h.run("", "events", "--date", "2026-11-10"); strings.Contains(out, "PUN-160") {
 		t.Fatalf("a confirmed day's events show the later retag:\n%s", out)

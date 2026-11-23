@@ -40,7 +40,7 @@ func list(t *testing.T, s Store) map[string]Worklog {
 
 func confirm(t *testing.T, s Store, ws []Worklog, local bool) []Worklog {
 	t.Helper()
-	got, err := s.Confirm(day, ws, local)
+	got, err := s.Confirm(day, 0, ws, local)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestConfirmRefusesBadWorklogs(t *testing.T) {
 		"no start":   {{Ticket: "WEB-1", Minutes: 5}},
 		"twice":      {{Ticket: "WEB-1", Started: nine, Minutes: 5}, {Ticket: "WEB-1", Started: nine, Minutes: 5}},
 	} {
-		if _, err := s.Confirm(day, ws, false); err == nil {
+		if _, err := s.Confirm(day, 0, ws, false); err == nil {
 			t.Errorf("%s: Confirm took it", name)
 		}
 	}
@@ -258,12 +258,37 @@ func TestConfirmRefusesBadWorklogs(t *testing.T) {
 func TestListRange(t *testing.T) {
 	s := Store{Dir: t.TempDir()}
 	for _, d := range []string{"2026-11-09", "2026-11-10", "2026-11-11"} {
-		if _, err := s.Confirm(d, []Worklog{{Ticket: "WEB-1", Started: nine, Minutes: 5}}, true); err != nil {
+		if _, err := s.Confirm(d, 0, []Worklog{{Ticket: "WEB-1", Started: nine, Minutes: 5}}, true); err != nil {
 			t.Fatal(err)
 		}
 	}
 	got, err := s.List("2026-11-10", "2026-11-11")
 	if err != nil || len(got) != 2 || got[0].Date != "2026-11-10" || got[1].Date != "2026-11-11" {
 		t.Errorf("List = %+v, %v", got, err)
+	}
+}
+
+func TestADaySentInPartsKeepsEachPart(t *testing.T) {
+	s := Store{Dir: t.TempDir()}
+	fake := &tracker.Fake{}
+	if _, err := s.Confirm(day, 0, []Worklog{{Ticket: "WEB-1", Started: nine, Minutes: 30}}, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Sync(context.Background(), fake, false); err != nil {
+		t.Fatal(err)
+	}
+	later := nine.Add(3 * time.Hour)
+	for range 2 {
+		if _, err := s.Confirm(day, 1, []Worklog{{Ticket: "WEB-1", Started: later, Minutes: 20}}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, _ := s.List(day, day)
+	if len(all) != 2 || all[0].Part != 0 || all[0].State != Synced || all[1].Part != 1 || all[1].State != Pending {
+		t.Fatalf("parts %+v; want part 0 synced and one pending part 1", all)
+	}
+	rep, err := s.Sync(context.Background(), fake, false)
+	if err != nil || len(rep.Sent) != 1 || len(fake.Worklogs()) != 2 || fake.Worklogs()[1].Worklog.TimeSpentSeconds != 1200 {
+		t.Fatalf("second sync sent %+v (%v); tracker holds %+v", rep.Sent, err, fake.Worklogs())
 	}
 }

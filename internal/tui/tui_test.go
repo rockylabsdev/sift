@@ -34,7 +34,8 @@ type fake struct {
 	sent      map[string]Status
 	now       time.Time
 	refreshes int
-	pending   bool // the calendar has not arrived; Refresh brings it
+	pending   bool      // the calendar has not arrived; Refresh brings it
+	through   time.Time // where Confirm puts the watermark; zero for the end of the day
 	fail      error
 	retags    []evidence.Retag
 	saves     int
@@ -125,16 +126,20 @@ func (f *fake) loadWith(day time.Time, rs []evidence.Retag) (Input, error) {
 	}
 	set := derive.Defaults
 	set.Until = f.now
-	return Input{Start: day, Events: mine, Day: derive.For(day, in, ms, set), Decisions: d,
+	var before derive.Day
+	if t := d.Through(); !t.IsZero() {
+		b := set
+		b.Until = t.Add(-time.Nanosecond)
+		before = derive.For(day, in, ms, b)
+		set.Since = t
+	}
+	return Input{Start: day, Events: mine, Day: derive.For(day, in, ms, set), Decisions: d, Before: before,
 		IdleGap: 10, Meetings: "calendar: test", Pending: f.pending, Today: day0.AddDate(0, 0, 2), Tracker: "Jira", Sent: f.sent, Now: f.now, Retags: rs, Skipped: skipped}, nil
 }
 
 func (f *fake) Update(day time.Time, change func(*draft.Decisions) error) error {
 	k := day.Format("2006-01-02")
 	d := f.dec[k]
-	if d.Confirmed != nil {
-		return draft.ErrConfirmed
-	}
 	if err := change(&d); err != nil {
 		return err
 	}
@@ -146,11 +151,17 @@ func (f *fake) Tracker() string { return "Jira" }
 
 func (f *fake) Refresh(time.Time) { f.refreshes++; f.pending = false }
 
+// Confirm sends what is ready through f.through, or the end of the day.
 func (f *fake) Confirm(day time.Time) (string, error) {
 	in, _ := f.Load(day)
 	d := draft.Of(in.Day, in.Decisions, 0)
-	return "Confirmed.", f.Update(day, func(dec *draft.Decisions) error {
-		dec.Confirmed = &draft.Confirmed{Worklogs: d.Sendable()}
+	through := f.through
+	if through.IsZero() {
+		through = day.AddDate(0, 0, 1)
+	}
+	return "Sent.", f.Update(day, func(dec *draft.Decisions) error {
+		dec.Sent = append(dec.Sent, draft.Send{At: hm(18, 5), Through: through, Worklogs: d.Tally()})
+		dec.Adjust = nil
 		return nil
 	})
 }
@@ -273,19 +284,38 @@ func TestMinusStopsAtZero(t *testing.T) {
 	}
 }
 
-func TestAConfirmedDayRefusesChanges(t *testing.T) {
+func TestSentTimeIsLockedAndLaterWorkCanBeSent(t *testing.T) {
 	f := newFake()
-	f.dec["2026-11-10"] = draft.Decisions{Confirmed: &draft.Confirmed{Worklogs: []draft.Worklog{{Ticket: "PUN-142", Minutes: 60, Started: hm(9, 0)}}}}
-	m := press(New(f, day0, ""), "+")
-	if !strings.Contains(m.msg, "Confirmed days do not change") || m.dr.Total != 60 {
-		t.Fatalf("msg %q total %d", m.msg, m.dr.Total)
+	f.through = hm(10, 0)
+	m := sized(press(New(f, day0, ""), "c", "y"), 160, 38)
+	if m.dr.State != draft.Partly || m.dr.SentTotal == 0 || m.dr.Total == 0 {
+		t.Fatalf("after sending through 10:00: state %s, %dm sent, %dm ready", m.dr.State, m.dr.SentTotal, m.dr.Total)
 	}
-	fr := frame(sized(m, 120, 36))
-	if !strings.Contains(fr, "· read-only") {
-		t.Fatalf("the header does not say confirmed and read-only")
+	fr := frame(m)
+	for _, want := range []string{"partly sent", "┊ sent 10:00", "sent 10:00 · locked", "since 10:00", "c send " + dur(m.dr.Total)} {
+		if !strings.Contains(fr, want) {
+			t.Errorf("missing %q:\n%s", want, fr)
+		}
 	}
-	if !strings.Contains(fr, "confirmed, read-only") || strings.Contains(fr, "t assign") {
-		t.Fatalf("a confirmed day offers keys it refuses:\n%s", fr)
+	if r, _ := m.selectedRow(); !r.sent {
+		t.Fatalf("the cursor is not on the sent row")
+	}
+	for _, k := range []string{"+", "t", "x", "r"} {
+		if got := press(m, k); got.msg != "Sent through 10:00. Change it in Jira." || got.mode != nil {
+			t.Fatalf("%s on sent time: msg %q", k, got.msg)
+		}
+	}
+	if fr := frame(press(m, "e")); !strings.Contains(fr, "inspect · sent") || !strings.Contains(fr, "09:00") {
+		t.Fatalf("e on the sent row does not show what was sent:\n%s", fr)
+	}
+	ready := m.dr.Total
+	f.through = time.Time{}
+	m = press(m, "c", "y")
+	if m.dr.State != draft.Sent || m.dr.Total != 0 || len(f.dec["2026-11-10"].Sent) != 2 {
+		t.Fatalf("the second send left %s with %dm ready and %d sends; want all %dm sent", m.dr.State, m.dr.Total, len(f.dec["2026-11-10"].Sent), ready)
+	}
+	if m = press(m, "c"); m.msg != "Nothing new to send." {
+		t.Fatalf("c with nothing new: %q", m.msg)
 	}
 }
 
@@ -299,18 +329,18 @@ func TestOnlyAssignableStretchesAssign(t *testing.T) {
 func TestConfirmAsksFirst(t *testing.T) {
 	f := newFake()
 	m := sized(press(New(f, day0, ""), "c"), 120, 36)
-	if !strings.Contains(frame(m), "Confirm Tue 10 Nov: 2 worklogs, 1h 40m to Jira?") {
+	if !strings.Contains(frame(m), "Send Tue 10 Nov: 2 worklogs, 1h 40m to Jira?") {
 		t.Fatalf("no question:\n%s", frame(m))
 	}
 	m = press(m, "n")
-	if m.dr.Confirmed || m.msg != "Not confirmed." {
-		t.Fatalf("any other key cancels: %+v %q", m.dr.Confirmed, m.msg)
+	if m.dr.State != draft.Open || m.msg != "Not confirmed." {
+		t.Fatalf("any other key cancels: %s %q", m.dr.State, m.msg)
 	}
 	m = press(m, "c", "y")
-	if !m.dr.Confirmed || !strings.Contains(frame(m), "· read-only") {
-		t.Fatalf("y confirms")
+	if m.dr.State != draft.Sent || !strings.Contains(frame(m), "sent Tue 18:05") {
+		t.Fatalf("y sends the day:\n%s", frame(m))
 	}
-	if m = press(m, "c"); m.msg != "Already confirmed." {
+	if m = press(m, "c"); m.msg != "Nothing new to send." {
 		t.Fatalf("msg %q", m.msg)
 	}
 }
@@ -331,13 +361,13 @@ func TestAPastDaySaysSo(t *testing.T) {
 	f := newFake()
 	fr := frame(sized(New(f, day0, ""), 120, 36))
 	if head := strings.SplitN(fr, "\n", 2)[0]; !strings.Contains(head, "Tue 10 Nov · 2 days ago") || !strings.Contains(head, "waiting for review") {
-		t.Fatalf("a past unconfirmed day must say it is waiting:\n%s", strings.SplitN(fr, "\n", 2)[0])
+		t.Fatalf("a past unsent day must say it is waiting:\n%s", strings.SplitN(fr, "\n", 2)[0])
 	}
-	f.dec["2026-11-10"] = draft.Decisions{Confirmed: &draft.Confirmed{At: hm(18, 5), Worklogs: []draft.Worklog{
-		{Ticket: "PUN-142", Minutes: 60, Started: hm(9, 0)}, {Ticket: "OPS-77", Minutes: 30, Started: hm(9, 50)}}}}
+	f.dec["2026-11-10"] = draft.Decisions{Sent: []draft.Send{{At: hm(18, 5), Through: day0.AddDate(0, 0, 1), Worklogs: []draft.Worklog{
+		{Ticket: "PUN-142", Minutes: 60, Raw: 60, Started: hm(9, 0)}, {Ticket: "OPS-77", Minutes: 30, Raw: 30, Started: hm(9, 50)}}}}}
 	f.sent = map[string]Status{"PUN-142": {State: "synced"}, "OPS-77": {State: "failed", Error: "Jira answered 503"}}
 	fr = frame(sized(New(f, day0, ""), 120, 36))
-	for _, want := range []string{"confirmed Tue 18:05 · read-only", "3 confirmed", "sent to Jira", "! not sent yet", "Jira answered 503"} {
+	for _, want := range []string{" sent Tue 18:05 ", "1h 30m sent", "sent to Jira", "! not sent yet", "Jira answered 503", "all sent"} {
 		if !strings.Contains(fr, want) {
 			t.Errorf("missing %q:\n%s", want, fr)
 		}
@@ -423,7 +453,7 @@ func TestARefreshWaitsForTheConfirmQuestion(t *testing.T) {
 	m := sized(press(New(f, day0, ""), "c"), 120, 36)
 	f.prompts(14, 0, 30, "NEW-9")
 	m = ticked(m)
-	if fr := frame(m); !strings.Contains(fr, "Confirm Tue 10 Nov: 2 worklogs, 1h 40m to Jira?") {
+	if fr := frame(m); !strings.Contains(fr, "Send Tue 10 Nov: 2 worklogs, 1h 40m to Jira?") {
 		t.Fatalf("the totals under the question changed:\n%s", fr)
 	}
 	if fr := frame(ticked(press(m, "n"))); !strings.Contains(fr, "NEW-9") {

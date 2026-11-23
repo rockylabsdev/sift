@@ -161,8 +161,6 @@ func (m Model) startRetag() Model {
 	switch {
 	case !ok:
 		m.msg = "Nothing to retag on this day."
-	case m.dr.Confirmed:
-		m.msg = "Confirmed days do not change."
 	case s.Kind != derive.Work:
 		m.msg = "Retag is for logged work; t assigns meetings and gaps."
 	}
