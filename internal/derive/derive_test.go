@@ -44,13 +44,13 @@ func TestRules(t *testing.T) {
 			map[string]int{"A": 10}, Unassigned{}, 2},
 		{"a meeting takes every minute it covers",
 			[]Event{ev(hm(9, 0), "A"), ev(hm(9, 5), "A"), ev(hm(9, 10), "A")},
-			[]Meeting{{hm(9, 4), hm(9, 8), "standup"}}, Defaults,
+			[]Meeting{{From: hm(9, 4), To: hm(9, 8), Title: "standup"}}, Defaults,
 			map[string]int{"A": 11}, Unassigned{Meetings: 4}, 3},
 		{"the setting lets events beat a meeting",
 			[]Event{ev(hm(9, 0), "A"), ev(hm(9, 5), "A"), ev(hm(9, 10), "A")},
-			[]Meeting{{hm(9, 4), hm(9, 8), "standup"}}, Settings{IdleGap: 10, Tail: 5, EventsWin: true},
+			[]Meeting{{From: hm(9, 4), To: hm(9, 8), Title: "standup"}}, Settings{IdleGap: 10, Tail: 5, EventsWin: true},
 			map[string]int{"A": 15}, Unassigned{}, 1},
-		{"a meeting with no evidence around it", nil, []Meeting{{hm(14, 0), hm(14, 30), "1:1"}}, Defaults,
+		{"a meeting with no evidence around it", nil, []Meeting{{From: hm(14, 0), To: hm(14, 30), Title: "1:1"}}, Defaults,
 			map[string]int{}, Unassigned{Meetings: 30}, 1},
 		{"an event with no ticket is unassigned", []Event{ev(hm(9, 0), "")}, nil, Defaults,
 			map[string]int{}, Unassigned{Ticketless: 5}, 1},
@@ -59,7 +59,7 @@ func TestRules(t *testing.T) {
 		{"no events, no meetings", nil, nil, Defaults, map[string]int{}, Unassigned{}, 0},
 		{"a block owns its minutes ahead of a meeting and evidence",
 			[]Event{ev(hm(9, 0), "A"), ev(hm(9, 5), "A")},
-			[]Meeting{{hm(9, 30), hm(10, 0), "planning"}},
+			[]Meeting{{From: hm(9, 30), To: hm(10, 0), Title: "planning"}},
 			Settings{IdleGap: 10, Tail: 5, Blocks: []Block{{hm(9, 5), hm(9, 45), "B"}}},
 			map[string]int{"A": 5, "B": 40}, Unassigned{Meetings: 15}, 2},
 		{"a block alone", nil, nil, Settings{IdleGap: 10, Tail: 5, Blocks: []Block{{hm(14, 0), hm(15, 30), "C"}}},
@@ -117,7 +117,7 @@ func randomDay(r *rand.Rand, start time.Time) ([]Event, []Meeting) {
 	ms := make([]Meeting, r.Intn(4))
 	for i := range ms {
 		from := start.Add(time.Duration(r.Intn(24*60)) * time.Minute)
-		ms[i] = Meeting{from, from.Add(time.Duration(15+r.Intn(120)) * time.Minute), "m"}
+		ms[i] = Meeting{From: from, To: from.Add(time.Duration(15+r.Intn(120)) * time.Minute), Title: "m"}
 	}
 	return ev, ms
 }
@@ -265,7 +265,7 @@ func TestAgentTime(t *testing.T) {
 
 func TestNothingCountsAfterUntil(t *testing.T) {
 	events := []Event{ev(hm(9, 0), "A"), ev(hm(9, 6), "A")}
-	meetings := []Meeting{{hm(9, 30), hm(10, 0), "standup"}, {hm(14, 0), hm(15, 0), "review"}}
+	meetings := []Meeting{{From: hm(9, 30), To: hm(10, 0), Title: "standup"}, {From: hm(14, 0), To: hm(15, 0), Title: "review"}}
 	cases := []struct {
 		name     string
 		until    time.Time

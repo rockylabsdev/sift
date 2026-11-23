@@ -41,7 +41,7 @@ sift confirm           # accept a day: one worklog per ticket, sent
 sift log               # this week's worklogs
 ```
 
-In the review, `↑↓` selects a stretch, `t` assigns a meeting, gap or ticketless time to a ticket, `r` moves one conversation's time in a stretch to another ticket (and, on time it moved, puts it back), `+ −` adjust a ticket by 5 minutes, `e` inspects a stretch (its events, where each ticket came from, and silences close to the idle gap), `c` confirms, `[ ]` change day and `T` changes theme (Graphite, Dusk, Paper).
+In the review, `↑↓` selects a stretch, `t` assigns a meeting, gap or ticketless time to a ticket, `x` skips a meeting you were not in, so its time goes back to your prompts (press it again to count the meeting), `r` moves one conversation's time in a stretch to another ticket (and, on time it moved, puts it back), `+ −` adjust a ticket by 5 minutes, `e` inspects a stretch (its events, where each ticket came from, and silences close to the idle gap), `c` confirms, `[ ]` change day and `T` changes theme (Graphite, Dusk, Paper).
 
 Started a conversation in an old worktree whose branch names the wrong ticket? Press `r` on its stretch in the review, or type `/sift retag PUN-160` in it, and that conversation's time on the old ticket counts for PUN-160, both what is logged and what comes after. `/sift retag PUN-160 from 9:45` moves only the time from then on. Other conversations, and helpers working on their own tickets, keep theirs. `sift retag --list` shows the retags made.
 

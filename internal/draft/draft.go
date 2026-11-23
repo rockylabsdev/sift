@@ -18,6 +18,7 @@ type Decisions struct {
 	Adjust    map[string]int    `json:"adjust,omitempty"` // minutes added (or removed) per ticket
 	Assign    map[string]string `json:"assign,omitempty"` // stretch id → ticket, for meetings, gaps and ticketless time
 	Blocks    []Block           `json:"blocks,omitempty"`
+	Skip      []string          `json:"skip,omitempty"` // meetings the user was not in, by derive.Meeting ID
 	Confirmed *Confirmed        `json:"confirmed,omitempty"`
 }
 

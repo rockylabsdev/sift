@@ -63,7 +63,7 @@ func Day(day time.Time) ([]evidence.Event, []derive.Meeting) {
 	burst("PUN-150", at(15, 55), at(17, 10), 1, 5)
 	sort.Slice(evs, func(i, j int) bool { return evs[i].At.Before(evs[j].At) })
 	return evs, []derive.Meeting{
-		{From: at(10, 0), To: at(10, 45), Title: "Sprint planning"},
-		{From: at(14, 0), To: at(14, 30), Title: "PUN-150 swarm"},
+		{ID: "demo-planning", From: at(10, 0), To: at(10, 45), Title: "Sprint planning"},
+		{ID: "demo-swarm", From: at(14, 0), To: at(14, 30), Title: "PUN-150 swarm"},
 	}
 }

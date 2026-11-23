@@ -136,7 +136,7 @@ func (s source) note(l Loaded) string {
 	if s.r.demoMeetings != nil {
 		return "demo day · nothing is kept"
 	}
-	return calendarNote(l.Calendar)
+	return calendarNote(l.calendar())
 }
 
 func (s source) Update(day time.Time, change func(*draft.Decisions) error) error {

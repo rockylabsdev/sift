@@ -398,3 +398,40 @@ func TestDraftSaysHowEventsWithoutAttendeesCounted(t *testing.T) {
 		t.Fatalf("an unknown setting: exit %d, %q", code, stderr)
 	}
 }
+
+func TestASkippedMeetingGivesItsMinutesBackToTheEvidence(t *testing.T) {
+	ics := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:sync\r\nSUMMARY:1:1 with Sam\r\nDTSTART:20261110T090000\r\nDTEND:20261110T093000\r\nORGANIZER:mailto:sam@example.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte(ics)) }))
+	defer srv.Close()
+	h := newHarness(t)
+	secrets := filepath.Join(h.env["XDG_CONFIG_HOME"], "sift", "secrets")
+	os.MkdirAll(secrets, 0o700)
+	os.WriteFile(filepath.Join(secrets, "calendar-url"), []byte(srv.URL), 0o600)
+	os.WriteFile(filepath.Join(h.env["XDG_CONFIG_HOME"], "sift", "config.json"), []byte(`{"email":"me@example.com"}`), 0o600)
+	for m := 0; m < 40; m += 3 {
+		h.prompt(9, m, h.repo)
+	}
+	minutes := func() (float64, []any) {
+		t.Helper()
+		_, _, data := h.envelope("draft", "--date", "2026-11-10")
+		ws := data["worklogs"].([]any)
+		if len(ws) == 0 {
+			return 0, data["skipped"].([]any)
+		}
+		return ws[0].(map[string]any)["minutes"].(float64), data["skipped"].([]any)
+	}
+	before, _ := minutes()
+	days := filepath.Join(h.env["XDG_DATA_HOME"], "sift", "days")
+	os.MkdirAll(days, 0o700)
+	os.WriteFile(filepath.Join(days, "2026-11-10.json"), []byte(`{"v":1,"date":"2026-11-10","skip":["sync@09:00"]}`), 0o600)
+	got, skipped := minutes()
+	if got-before != 30 {
+		t.Fatalf("skipping the meeting took PUN-142 from %vm to %vm; want its 30m back", before, got)
+	}
+	if len(skipped) != 1 || skipped[0].(map[string]any)["reason"] != "skipped" || skipped[0].(map[string]any)["title"] != "1:1 with Sam" {
+		t.Fatalf("draft lists %v as left out; want the 1:1, skipped", skipped)
+	}
+	if _, _, data := h.envelope("draft", "--date", "2026-11-10"); data["meetings"] != "calendar: 0 meetings, 1 left out" {
+		t.Fatalf("draft says %q", data["meetings"])
+	}
+}

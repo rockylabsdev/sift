@@ -33,6 +33,7 @@ const (
 	Free       Reason = "free"
 	Alone      Reason = "no other attendee"
 	Unreadable Reason = "unreadable"
+	ByYou      Reason = "skipped" // the user said they were not in it
 )
 
 // Skipped is an occurrence on the day that was left out.
