@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -60,7 +62,7 @@ func newFake() *fake {
 	for m := 0; m < 40; m += 5 {
 		add(11, m, "OPS-77")
 	}
-	f.meetings = []derive.Meeting{{From: hm(10, 0), To: hm(10, 30), Title: "PUN-142 standup"}}
+	f.meetings = []derive.Meeting{{From: hm(10, 0), To: hm(10, 30), Title: "PUN-142 standup", ID: "standup@10:00"}}
 	return f
 }
 
@@ -110,15 +112,21 @@ func (f *fake) loadWith(day time.Time, rs []evidence.Retag) (Input, error) {
 			mine = append(mine, e)
 		}
 	}
-	var ms []derive.Meeting
-	if day.Equal(day0) && !f.pending {
-		ms = f.meetings
-	}
 	d := f.dec[day.Format("2006-01-02")]
+	var ms, skipped []derive.Meeting
+	if day.Equal(day0) && !f.pending {
+		for _, mt := range f.meetings {
+			if slices.Contains(d.Skip, mt.ID) {
+				skipped = append(skipped, mt)
+			} else {
+				ms = append(ms, mt)
+			}
+		}
+	}
 	set := derive.Defaults
 	set.Until = f.now
 	return Input{Start: day, Events: mine, Day: derive.For(day, in, ms, set), Decisions: d,
-		IdleGap: 10, Meetings: "calendar: test", Pending: f.pending, Today: day0.AddDate(0, 0, 2), Tracker: "Jira", Sent: f.sent, Now: f.now, Retags: rs}, nil
+		IdleGap: 10, Meetings: "calendar: test", Pending: f.pending, Today: day0.AddDate(0, 0, 2), Tracker: "Jira", Sent: f.sent, Now: f.now, Retags: rs, Skipped: skipped}, nil
 }
 
 func (f *fake) Update(day time.Time, change func(*draft.Decisions) error) error {
@@ -548,5 +556,75 @@ func TestChangingDayFetchesAPendingCalendar(t *testing.T) {
 	m2, _ := m1.Update(cmd())
 	if fr := frame(m2.(Model)); !strings.Contains(fr, "PUN-142 standup") {
 		t.Fatalf("the day's standup is missing once the calendar arrived:\n%s", fr)
+	}
+}
+
+func TestMeetingNamesAreWholeOrAbsentAndBackToBackMeetingsSeparate(t *testing.T) {
+	f := newFake()
+	f.meetings = []derive.Meeting{
+		{From: hm(8, 0), To: hm(8, 10), Title: "Team standup"},
+		{From: hm(8, 10), To: hm(8, 20), Title: "OPS standup"},
+		{From: hm(10, 0), To: hm(10, 30), Title: "PUN-142 standup"},
+		{From: hm(13, 0), To: hm(13, 15), Title: "Quarterly planning: platform roadmap"},
+		{From: hm(13, 15), To: hm(13, 30), Title: "Incident review: checkout outage"},
+		{From: hm(15, 45), To: hm(16, 15), Title: "Design review"},
+	}
+	fr := frame(sized(New(f, day0, ""), 160, 38))
+	var other, labels string
+	lines := strings.Split(fr, "\n")
+	for i, l := range lines {
+		if strings.Contains(l, " other ") {
+			other, labels = l, lines[i-1]
+		}
+	}
+	if strings.Contains(other, "…") || strings.Contains(labels, "…") {
+		t.Fatalf("a meeting name was cut:\n%s\n%s", labels, other)
+	}
+	for _, want := range []string{"OPS standup", "PUN-142 standup", "Incident review: checkout outage", "Design review"} {
+		if !strings.Contains(labels, want) {
+			t.Errorf("want %q whole: it has room before the next meeting\n%s", want, labels)
+		}
+	}
+	for _, not := range []string{"Team standup", "Quarterly planning"} {
+		if strings.Contains(labels, not) {
+			t.Errorf("%q runs over the next meeting's bar, so it must be left off\n%s\n%s", not, labels, other)
+		}
+	}
+	if !regexp.MustCompile(`▰ ▰`).MatchString(other) {
+		t.Fatalf("back-to-back meetings run together:\n%s", other)
+	}
+}
+
+func TestXSkipsAMeetingAndCountsItAgain(t *testing.T) {
+	f := newFake()
+	f.prompts(10, 5, 25, "OPS-77")
+	m := sized(New(f, day0, ""), 130, 38)
+	for i := 0; i < 10; i++ {
+		if r, _ := m.selectedRow(); r.Kind == derive.InMeet {
+			break
+		}
+		m = press(m, "down")
+	}
+	before := m.worklog("OPS-77").Minutes
+	m = press(m, "x")
+	if got := f.dec["2026-11-10"].Skip; !slices.Equal(got, []string{"standup@10:00"}) {
+		t.Fatalf("x saved skip %v", got)
+	}
+	fr := frame(m)
+	if r, _ := m.selectedRow(); !r.skipped || !strings.Contains(fr, "skipped") || !strings.Contains(fr, "x counts it again") {
+		t.Fatalf("the cursor left the skipped meeting, or it does not say skipped:\n%s", fr)
+	}
+	if got := m.worklog("OPS-77").Minutes; got <= before {
+		t.Fatalf("skipping the standup left OPS-77 at %dm, from %dm; its prompts during it should count", got, before)
+	}
+	if fr := frame(press(m, "t")); !strings.Contains(fr, "x counts it again") || f.dec["2026-11-10"].Assign != nil {
+		t.Fatalf("t on a skipped meeting assigned it, or said nothing")
+	}
+	m = press(m, "x")
+	if r, _ := m.selectedRow(); r.skipped || r.Kind != derive.InMeet || len(f.dec["2026-11-10"].Skip) != 0 {
+		t.Fatalf("a second x did not count the meeting again")
+	}
+	if got := m.worklog("OPS-77").Minutes; got != before {
+		t.Fatalf("OPS-77 is %dm after the undo; want %dm", got, before)
 	}
 }

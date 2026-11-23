@@ -34,6 +34,7 @@ const (
 type Meeting struct {
 	From, To time.Time
 	Title    string
+	ID       string // one occurrence on the calendar, for decisions about it
 }
 
 // Block is time the user gave a ticket by hand, for work no collector
@@ -75,6 +76,7 @@ type Stretch struct {
 	Unassigned  int            `json:"unassigned,omitempty"` // minutes no ticket owns
 	Agent       map[string]int `json:"agent,omitempty"`      // of those, minutes from agent activity, by ticket ("" for none)
 	Meeting     string         `json:"meeting,omitempty"`
+	MeetingID   string         `json:"meetingId,omitempty"`
 	Events      int            `json:"events"`
 	AgentEvents int            `json:"agentEvents,omitempty"`
 }
@@ -410,7 +412,7 @@ func For(start time.Time, events []Event, meetings []Meeting, s Settings) Day {
 					}
 				}
 			case isMeeting(o):
-				st.Kind, st.Meeting, st.Unassigned = InMeet, meetings[meet0-o].Title, j-i
+				st.Kind, st.Meeting, st.MeetingID, st.Unassigned = InMeet, meetings[meet0-o].Title, meetings[meet0-o].ID, j-i
 			default:
 				st.Kind, st.Unassigned = Silence, j-i
 			}

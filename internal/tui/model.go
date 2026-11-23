@@ -6,6 +6,7 @@ package tui
 import (
 	"errors"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ type Input struct {
 	Sent      map[string]Status // a confirmed day's worklogs, by ticket, as the outbox has them
 	Now       time.Time         // the clock when the day was loaded; zero means not live
 	Retags    []evidence.Retag  // the retags read into this day's sessions, in the order made
+	Skipped   []derive.Meeting  // meetings the user skipped, which Day leaves out
 }
 
 // Status is where one confirmed worklog stands.
@@ -85,6 +87,7 @@ type Model struct {
 	effT    []string // per minute of the day: the ticket credited, after decisions
 	effK    []derive.Kind
 	effA    []bool // per minute: counted from agent activity
+	list    []row  // the stretches list: the day's stretches and its skipped meetings, by time
 	cur     int
 	inspect int // 0 closed; 1 the stretch in context; 2 also every event
 	theme   int
@@ -117,13 +120,35 @@ func (m *Model) load(day time.Time) {
 		return
 	}
 	m.in, m.err = in, nil
-	m.cur = min(m.cur, max(len(in.Day.Stretches)-1, 0))
 	m.recompute()
+	m.cur = min(m.cur, max(len(m.list)-1, 0))
+}
+
+// row is one line of the stretches list: a stretch of the day, or a
+// meeting the user skipped, kept at its time so x can count it again.
+// A skipped meeting's Stretch has its time, title and MeetingID, and
+// claims no minutes.
+type row struct {
+	derive.Stretch
+	skipped bool
+}
+
+func rowsOf(in Input) []row {
+	var out []row
+	for _, s := range in.Day.Stretches {
+		out = append(out, row{Stretch: s})
+	}
+	for _, mt := range in.Skipped {
+		out = append(out, row{Stretch: derive.Stretch{From: mt.From, To: mt.To, Kind: derive.InMeet, Meeting: mt.Title, MeetingID: mt.ID}, skipped: true})
+	}
+	slices.SortStableFunc(out, func(a, b row) int { return a.From.Compare(b.From) })
+	return out
 }
 
 // recompute derives everything the screen shows from in.
 func (m *Model) recompute() {
 	m.dr = draft.Of(m.in.Day, m.in.Decisions, m.in.Round)
+	m.list = rowsOf(m.in)
 	m.tickets = m.tickets[:0]
 	for _, w := range m.dr.Worklogs {
 		m.tickets = append(m.tickets, w.Ticket)
@@ -164,12 +189,44 @@ func (m Model) theme_() *Theme { return &Themes[m.theme] }
 
 func (m Model) stretches() []derive.Stretch { return m.in.Day.Stretches }
 
+// selected is the stretch under the cursor; a skipped meeting is not one.
 func (m Model) selected() (derive.Stretch, bool) {
-	s := m.stretches()
-	if m.cur < len(s) {
-		return s[m.cur], true
+	if r, ok := m.selectedRow(); ok && !r.skipped {
+		return r.Stretch, true
 	}
 	return derive.Stretch{}, false
+}
+
+func (m Model) selectedRow() (row, bool) {
+	if m.cur < len(m.list) {
+		return m.list[m.cur], true
+	}
+	return row{}, false
+}
+
+// skip skips the selected meeting, or counts a skipped one again, and
+// keeps the cursor on it.
+func (m *Model) skip() {
+	r, ok := m.selectedRow()
+	if !ok || r.Kind != derive.InMeet {
+		m.msg = "Only meetings can be skipped."
+		return
+	}
+	id := r.MeetingID
+	m.change(func(d *draft.Decisions) error {
+		if i := slices.Index(d.Skip, id); i >= 0 {
+			d.Skip = slices.Delete(d.Skip, i, i+1)
+		} else {
+			d.Skip = append(d.Skip, id)
+		}
+		return nil
+	})
+	for i, r := range m.list {
+		if r.MeetingID == id {
+			m.cur = i
+			break
+		}
+	}
 }
 
 func (m Model) worklog(t string) draft.Worklog {
@@ -296,7 +353,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // browse answers a key while no question is open.
 func (m Model) browse(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	s, ok := m.selected()
+	if r, _ := m.selectedRow(); r.skipped && slices.Contains([]string{"t", "enter", "+", "=", "-", "r"}, k.String()) {
+		m.msg = "You skipped this meeting, so it has no time. x counts it again."
+		return m, nil
+	}
 	switch k.String() {
+	case "x":
+		m.skip()
 	case "c":
 		switch {
 		case m.dr.Confirmed:
@@ -315,7 +378,7 @@ func (m Model) browse(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		m.cur = max(m.cur-1, 0)
 	case "down", "j":
-		m.cur = min(m.cur+1, max(len(m.stretches())-1, 0))
+		m.cur = min(m.cur+1, max(len(m.list)-1, 0))
 	case "e":
 		m.inspect = (m.inspect + 1) % 3
 	case "esc":

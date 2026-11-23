@@ -4,6 +4,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -128,6 +130,7 @@ type Loaded struct {
 	Config    Config
 	Store     draft.Store
 	Calendar  calendar.Day
+	Skipped   []derive.Meeting // meetings the user skipped, left out of Day
 	Retags    []evidence.Retag // the retags applied, in the order made
 }
 
@@ -176,15 +179,22 @@ func (r *run) loadAs(date string, edit func([]evidence.Retag) []evidence.Retag, 
 	for _, b := range l.Decisions.Blocks {
 		set.Blocks = append(set.Blocks, derive.Block{From: b.From, To: b.To, Ticket: b.Ticket})
 	}
-	var meetings []derive.Meeting
+	var all, meetings []derive.Meeting
 	if l.Decisions.Confirmed == nil && r.withCalendar {
 		l.Calendar = r.meetings(cfg, start, wait)
 		for _, m := range l.Calendar.Meetings {
-			meetings = append(meetings, derive.Meeting{From: m.From, To: m.To, Title: m.Title})
+			all = append(all, derive.Meeting{ID: meetingID(m), From: m.From, To: m.To, Title: m.Title})
 		}
 	}
 	if r.demoMeetings != nil {
-		meetings = r.demoMeetings(start)
+		all = r.demoMeetings(start)
+	}
+	for _, m := range all {
+		if slices.Contains(l.Decisions.Skip, m.ID) {
+			l.Skipped = append(l.Skipped, m)
+		} else {
+			meetings = append(meetings, m)
+		}
 	}
 	l.Day = derive.For(start, in, meetings, set)
 	return l, nil
@@ -206,7 +216,7 @@ func (r *run) draft(args []string) (any, func(io.Writer), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	dr := Draft{Draft: draft.Of(l.Day, l.Decisions, l.Config.Round), Stretches: nonNil(l.Day.Stretches), Meetings: calendarNote(l.Calendar), Skipped: nonNil(l.Calendar.Skipped), Settings: l.Config}
+	dr := Draft{Draft: draft.Of(l.Day, l.Decisions, l.Config.Round), Stretches: nonNil(l.Day.Stretches), Meetings: calendarNote(l.calendar()), Skipped: nonNil(l.calendar().Skipped), Settings: l.Config}
 	if md {
 		r.json = false
 	}
@@ -291,6 +301,31 @@ func writeDraft(w io.Writer, d Draft, loc *time.Location, md bool) {
 		}
 		fmt.Fprintf(w, "  %s–%s  %s\n", clock(s.From), clock(s.To), strings.Join(parts, " · "))
 	}
+}
+
+// meetingID names one occurrence of a calendar event within its day.
+func meetingID(m calendar.Meeting) string {
+	id := m.UID
+	if id == "" {
+		id = m.Title
+	}
+	return id + "@" + m.From.Format("15:04")
+}
+
+// calendar is the day's calendar after the user's decisions: the
+// meetings they skipped move to the events left out.
+func (l Loaded) calendar() calendar.Day {
+	c := l.Calendar
+	c.Meetings, c.Skipped = nil, append([]calendar.Skipped{}, l.Calendar.Skipped...)
+	for _, m := range l.Calendar.Meetings {
+		if slices.Contains(l.Decisions.Skip, meetingID(m)) {
+			c.Skipped = append(c.Skipped, calendar.Skipped{Meeting: m, Reason: calendar.ByYou})
+		} else {
+			c.Meetings = append(c.Meetings, m)
+		}
+	}
+	sort.SliceStable(c.Skipped, func(i, j int) bool { return c.Skipped[i].From.Before(c.Skipped[j].From) })
+	return c
 }
 
 func hasTicket(ws []draft.Worklog, k string) bool {
