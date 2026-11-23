@@ -167,7 +167,7 @@ func (r *run) fetchFeed(cfg Config) (*calendar.Feed, error) {
 func calendarNote(c calendar.Day) string {
 	note := calendarCount(c)
 	switch {
-	case c.Source == calendar.None || c.Source == calendar.Pending || !c.Unlisted:
+	case c.Source == calendar.None || c.Source == calendar.Pending || !c.Unlisted || c.Problem != "":
 	case c.Bare:
 		note += " · published feed without attendees, events count as meetings"
 	default:
