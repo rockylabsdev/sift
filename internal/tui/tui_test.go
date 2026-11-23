@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -548,5 +549,31 @@ func TestChangingDayFetchesAPendingCalendar(t *testing.T) {
 	m2, _ := m1.Update(cmd())
 	if fr := frame(m2.(Model)); !strings.Contains(fr, "PUN-142 standup") {
 		t.Fatalf("the day's standup is missing once the calendar arrived:\n%s", fr)
+	}
+}
+
+func TestMeetingNamesAreWholeOrAbsentAndBackToBackMeetingsSeparate(t *testing.T) {
+	f := newFake()
+	f.meetings = []derive.Meeting{
+		{From: hm(8, 0), To: hm(8, 10), Title: "Team standup"},
+		{From: hm(8, 10), To: hm(8, 20), Title: "OPS standup"},
+		{From: hm(10, 0), To: hm(10, 30), Title: "PUN-142 standup"},
+	}
+	fr := frame(sized(New(f, day0, ""), 160, 38))
+	var other, labels string
+	lines := strings.Split(fr, "\n")
+	for i, l := range lines {
+		if strings.Contains(l, " other ") {
+			other, labels = l, lines[i-1]
+		}
+	}
+	if strings.Contains(other, "…") || strings.Contains(labels, "…") {
+		t.Fatalf("a meeting name was cut:\n%s\n%s", labels, other)
+	}
+	if !strings.Contains(labels, "Team standup") || !strings.Contains(labels, "PUN-142 standup") || strings.Contains(labels, "OPS standup") {
+		t.Fatalf("want Team standup and PUN-142 standup whole, and OPS standup left off for want of room:\n%s", labels)
+	}
+	if !regexp.MustCompile(`▰ ▰`).MatchString(other) {
+		t.Fatalf("back-to-back standups run together:\n%s", other)
 	}
 }
