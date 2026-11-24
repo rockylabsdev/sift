@@ -1,7 +1,8 @@
 package draft
 
 import (
-	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -106,33 +107,70 @@ func TestRounding(t *testing.T) {
 	}
 }
 
-func TestAConfirmedDayIsWhatWasConfirmed(t *testing.T) {
-	frozen := []Worklog{{Ticket: "A", Minutes: 90}}
-	d := Of(sample(), Decisions{Confirmed: &Confirmed{Worklogs: frozen}}, 0)
-	if !d.Confirmed || d.Total != 90 || len(d.Worklogs) != 1 {
-		t.Fatalf("%+v", d)
+// since derives sample from the minute at h:m on, as a draft after a send at h:m sees it.
+func since(h, m int) derive.Day {
+	set := derive.Defaults
+	set.Since = hm(h, m)
+	ev := []derive.Event{
+		{At: hm(9, 0), Ticket: "A"}, {At: hm(9, 6), Ticket: "B"},
+		{At: hm(9, 40), Ticket: ""},
+		{At: hm(10, 30), Ticket: "A"},
+	}
+	return derive.For(day0, ev, []derive.Meeting{{From: hm(10, 0), To: hm(10, 20), Title: "standup"}}, set)
+}
+
+func TestAfterASendTheDraftIsWhatCameSince(t *testing.T) {
+	sent := Send{At: hm(9, 30), Through: hm(9, 30), Worklogs: []Worklog{{Ticket: "A", Minutes: 6, Raw: 6}, {Ticket: "B", Minutes: 8, Raw: 8}}}
+	d := Of(since(9, 30), Decisions{Sent: []Send{sent}}, 0)
+	if d.State != Partly || d.SentTotal != 14 || d.Total != 5 || find(d, "A").Minutes != 5 || find(d, "B").Minutes != 0 {
+		t.Fatalf("state %s, sent %dm %+v, ready %dm %+v; want partly sent, 14m sent, A's 5m from 10:30 ready", d.State, d.SentTotal, d.Sent, d.Total, d.Worklogs)
+	}
+	if !d.Through.Equal(hm(9, 30)) {
+		t.Fatalf("through %s", d.Through)
+	}
+	all := Of(since(11, 0), Decisions{Sent: []Send{sent, {At: hm(11, 0), Through: hm(11, 0), Worklogs: []Worklog{{Ticket: "A", Minutes: 5, Raw: 5}}}}}, 0)
+	if all.State != Sent || !all.Confirmed || all.SentTotal != 19 || len(all.Sendable()) != 0 {
+		t.Fatalf("after a second send with nothing since: %s, %dm sent, %+v ready", all.State, all.SentTotal, all.Sendable())
 	}
 }
 
-func TestStoreRefusesChangesOnceConfirmed(t *testing.T) {
+func TestRoundingRoundsTheRunningTotal(t *testing.T) {
+	first := Of(since(0, 0), Decisions{}, 15)
+	tally := map[string]Worklog{}
+	for _, w := range first.Tally() {
+		tally[w.Ticket] = w
+	}
+	if tally["B"].Raw != 8 || tally["B"].Minutes != 15 {
+		t.Fatalf("first tally %+v", first.Tally())
+	}
+	// two sends of 5 raw minutes each, at 15-minute rounding: nothing, then 15
+	one := Send{Through: hm(9, 30), Worklogs: []Worklog{{Ticket: "A", Raw: 5, Minutes: 0}}}
+	if got := roundTo(one.Worklogs[0].Raw, 15); got != 0 {
+		t.Fatalf("5m rounds to %d", got)
+	}
+	d := Of(since(10, 25), Decisions{Sent: []Send{one}}, 15)
+	if a := find(d, "A"); a.Raw != 5 || a.Minutes != 15 {
+		t.Fatalf("A since 10:25 is %+v; want its 5 raw minutes plus the 5 already sent rounded to 15, all of it ready", a)
+	}
+}
+
+func TestAnOldConfirmedDayReadsAsSentThroughItsEnd(t *testing.T) {
 	s := Store{Dir: t.TempDir()}
-	if _, err := s.Update("2026-11-10", func(d *Decisions) error {
-		d.Adjust = map[string]int{"A": 5}
-		return nil
-	}); err != nil {
+	os.MkdirAll(filepath.Join(s.Dir, "days"), 0o700)
+	os.WriteFile(filepath.Join(s.Dir, "days", "2026-11-10.json"), []byte(`{"v":1,"date":"2026-11-10","confirmed":{"at":"2026-11-10T18:05:00Z","worklogs":[{"ticket":"A","minutes":90}]}}`), 0o600)
+	dec, err := s.Load("2026-11-10")
+	end := time.Date(2026, 11, 11, 0, 0, 0, 0, time.Local)
+	if err != nil || len(dec.Sent) != 1 || !dec.Through().Equal(end) || dec.Sent[0].Worklogs[0].Raw != 90 || dec.Confirmed != nil {
+		t.Fatalf("%+v %v", dec, err)
+	}
+	d := Of(derive.Day{Start: day0}, dec, 0)
+	if d.State != Sent || d.SentTotal != 90 {
+		t.Fatalf("%+v", d)
+	}
+	if _, err := s.Update("2026-11-10", func(d *Decisions) error { d.Adjust = map[string]int{"A": 5}; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := s.Load("2026-11-10")
-	if got.Adjust["A"] != 5 {
-		t.Fatalf("%+v", got)
-	}
-	s.Update("2026-11-10", func(d *Decisions) error { d.Confirmed = &Confirmed{}; return nil })
-	_, err := s.Update("2026-11-10", func(d *Decisions) error { d.Adjust["A"] = 10; return nil })
-	if !errors.Is(err, ErrConfirmed) {
-		t.Fatalf("err %v", err)
-	}
-	days, _ := s.Days()
-	if !days["2026-11-10"] {
-		t.Fatalf("days %v", days)
+	if dec, _ := s.Load("2026-11-10"); dec.V != Version || len(dec.Sent) != 1 || dec.Adjust["A"] != 5 {
+		t.Fatalf("rewritten as %+v", dec)
 	}
 }

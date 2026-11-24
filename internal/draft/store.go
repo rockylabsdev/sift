@@ -6,18 +6,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
 )
 
-// Version is the decisions file's schema version.
-const Version = 1
-
-// ErrConfirmed: the day was confirmed and is read-only.
-var ErrConfirmed = errors.New("this day is confirmed and can no longer change")
+// Version is the decisions file's schema version. 2 sends a day in parts;
+// a sift that reads only 1 would take a sent day for unsent, so it refuses.
+const Version = 2
 
 // ErrBusy: another sift held the lock for the whole wait.
 var ErrBusy = errors.New("the day is locked by another sift")
@@ -43,11 +40,23 @@ func (s Store) Load(date string) (Decisions, error) {
 	if dec.V > Version {
 		return dec, fmt.Errorf("%s was written by a newer sift (v%d)", s.path(date), dec.V)
 	}
+	if c := dec.Confirmed; c != nil && len(dec.Sent) == 0 {
+		day, err := time.ParseInLocation(time.DateOnly, date, time.Local)
+		if err != nil {
+			return dec, fmt.Errorf("%s: %v", s.path(date), err)
+		}
+		for i := range c.Worklogs {
+			c.Worklogs[i].Raw = c.Worklogs[i].Minutes
+		}
+		dec.Sent = []Send{{At: c.At, Through: day.AddDate(0, 0, 1), Worklogs: c.Worklogs}}
+		dec.Adjust = nil // an older sift kept it, and it is in what was sent
+	}
+	dec.Confirmed = nil
 	return dec, nil
 }
 
 // Update applies change to a day's decisions under the lock and writes the
-// result atomically. A confirmed day refuses every change.
+// result atomically.
 func (s Store) Update(date string, change func(*Decisions) error) (Decisions, error) {
 	if err := os.MkdirAll(filepath.Join(s.Dir, "days"), 0o700); err != nil {
 		return Decisions{}, err
@@ -60,9 +69,6 @@ func (s Store) Update(date string, change func(*Decisions) error) (Decisions, er
 	dec, err := s.Load(date)
 	if err != nil {
 		return dec, err
-	}
-	if dec.Confirmed != nil {
-		return dec, ErrConfirmed
 	}
 	if err := change(&dec); err != nil {
 		return dec, err
@@ -79,16 +85,16 @@ func (s Store) Update(date string, change func(*Decisions) error) (Decisions, er
 	return dec, os.Rename(tmp, s.path(date))
 }
 
-// Days lists every day with decisions, and whether it is confirmed.
-func (s Store) Days() (map[string]bool, error) {
+// Days is every day with decisions, by date.
+func (s Store) Days() (map[string]Decisions, error) {
 	entries, err := os.ReadDir(filepath.Join(s.Dir, "days"))
 	if errors.Is(err, os.ErrNotExist) {
-		return map[string]bool{}, nil
+		return map[string]Decisions{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]bool{}
+	out := map[string]Decisions{}
 	for _, e := range entries {
 		date, ok := strings.CutSuffix(e.Name(), ".json")
 		if !ok {
@@ -98,19 +104,9 @@ func (s Store) Days() (map[string]bool, error) {
 		if err != nil {
 			return nil, err
 		}
-		out[date] = dec.Confirmed != nil
+		out[date] = dec
 	}
 	return out, nil
-}
-
-// SortedDates is m's keys in order.
-func SortedDates(m map[string]bool) []string {
-	var out []string
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
 
 func lock(path string, wait time.Duration) (func(), error) {

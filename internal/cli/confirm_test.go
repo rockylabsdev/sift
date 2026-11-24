@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeJira records worklog posts and answers with an id, or with status.
@@ -138,5 +139,60 @@ echo '{"v":1,"ok":true,"outcome":"ok","command":"log","data":{"rows":[{"date":"2
 	if len(rows) != 2 || rows[0].(map[string]any)["from"] != "punchcard" {
 		b, _ := json.Marshal(rows)
 		t.Fatalf("log %s", b)
+	}
+}
+
+func TestConfirmSendsWhatIsThereAndLaterWorkCanBeSentToo(t *testing.T) {
+	h := newHarness(t)
+	f := h.jira(t)
+	ops := filepath.Join(h.repo, "ops")
+	os.MkdirAll(ops, 0o700)
+	os.WriteFile(filepath.Join(ops, ".sift"), []byte("OPS-77\n"), 0o600)
+	for m := 0; m < 30; m += 3 {
+		h.prompt(9, m, h.repo)
+	}
+	h.now = time.Date(2026, 11, 10, 10, 0, 0, 0, time.Local)
+	if code, _, _ := h.envelope("confirm"); code != 0 || len(f.posts) != 1 {
+		t.Fatalf("first confirm: exit %d, posts %v", code, f.posts)
+	}
+	for m := 0; m < 30; m += 3 {
+		h.prompt(11, m, ops)
+	}
+	h.now = time.Date(2026, 11, 10, 12, 0, 0, 0, time.Local)
+	_, _, data := h.envelope("draft")
+	ready := map[string]float64{}
+	for _, w := range data["worklogs"].([]any) {
+		w := w.(map[string]any)
+		ready[w["ticket"].(string)] = w["minutes"].(float64)
+	}
+	if ready["OPS-77"] != 32 || ready["PUN-142"] != 0 {
+		t.Fatalf("after the first send the draft is ready to send %v; want OPS-77's 32m and nothing more of PUN-142", ready)
+	}
+	if code, _, _ := h.envelope("confirm"); code != 0 || len(f.posts) != 2 || !strings.Contains(f.posts[1], "/issue/OPS-77/worklog") || !strings.Contains(f.posts[1], `"timeSpentSeconds":1920`) {
+		t.Fatalf("second confirm: exit %d, posts %v", code, f.posts)
+	}
+	if code, _, data := h.envelope("confirm"); code != 0 || len(f.posts) != 2 || data["already"] != true {
+		t.Fatalf("a confirm with nothing new sent again: exit %d, %v, posts %v", code, data, f.posts)
+	}
+}
+
+func TestAPartlySentDayWaitsUntilWhatCameAfterIsSent(t *testing.T) {
+	h := newHarness(t)
+	h.jira(t)
+	h.prompt(9, 0, h.repo)
+	h.now = time.Date(2026, 11, 10, 10, 0, 0, 0, time.Local)
+	if code, _, _ := h.envelope("confirm"); code != 0 {
+		t.Fatalf("confirm: exit %d", code)
+	}
+	h.prompt(15, 0, h.repo)
+	h.now = time.Date(2026, 11, 11, 9, 0, 0, 0, time.Local)
+	if _, _, data := h.envelope("status"); len(data["waiting"].([]any)) != 1 {
+		t.Fatalf("waiting %v; want 2026-11-10, sent only through 10:01", data["waiting"])
+	}
+	if code, _, data := h.envelope("confirm", "--date", "2026-11-10"); code != 0 || data["minutes"].(float64) != 5 {
+		t.Fatalf("sending the rest: exit %d, %v", code, data)
+	}
+	if _, _, data := h.envelope("status"); len(data["waiting"].([]any)) != 0 {
+		t.Fatalf("waiting %v after everything was sent", data["waiting"])
 	}
 }

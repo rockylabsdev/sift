@@ -443,3 +443,10 @@ func TestASkippedMeetingGivesItsMinutesBackToTheEvidence(t *testing.T) {
 		t.Fatalf("the review was handed skipped meetings %+v, %v", in.Skipped, err)
 	}
 }
+
+func TestACalendarProblemIsNotFollowedByTheAttendeeNote(t *testing.T) {
+	d := calendar.Day{Source: calendar.Cached, Unlisted: true, Bare: true, Problem: "Meetings are as of Nov 23 16:46: could not reach the calendar."}
+	if got := calendarNote(d); got != d.Problem {
+		t.Fatalf("note %q; want the problem alone", got)
+	}
+}

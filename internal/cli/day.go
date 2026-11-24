@@ -49,18 +49,35 @@ func (r *run) day(date string, edit func([]evidence.Retag) []evidence.Retag) (ti
 	if edit != nil {
 		rs = edit(rs)
 	}
-	// a confirmed day keeps deriving what was sent: a later retag passes it by
-	// (a broken decisions file is load's to report)
-	if dec, _ := (draft.Store{Dir: dir}).Load(start.Format("2006-01-02")); dec.Confirmed != nil {
-		var kept []evidence.Retag
+	// Sent time keeps showing what was sent: the events a send covered take
+	// only the retags made before it. (A broken decisions file is load's to
+	// report.)
+	dec, _ := (draft.Store{Dir: dir}).Load(start.Format("2006-01-02"))
+	var out []evidence.Event
+	from := time.Time{}
+	for _, s := range dec.Sent {
+		var before []evidence.Retag
 		for _, rt := range rs {
-			if !rt.At.After(dec.Confirmed.At) {
-				kept = append(kept, rt)
+			if !rt.At.After(s.At) {
+				before = append(before, rt)
 			}
 		}
-		rs = kept
+		out = append(out, evidence.Apply(between(events, from, s.Through), before)...)
+		from = s.Through
 	}
-	return start, evidence.Apply(events, rs), rs, nil
+	out = append(out, evidence.Apply(between(events, from, time.Time{}), rs)...)
+	return start, out, rs, nil
+}
+
+// between is the events at or after from and, unless to is zero, before to.
+func between(events []evidence.Event, from, to time.Time) []evidence.Event {
+	var out []evidence.Event
+	for _, e := range events {
+		if !e.At.Before(from) && (to.IsZero() || e.At.Before(to)) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func inDay(start time.Time, at time.Time) bool {
@@ -131,6 +148,7 @@ type Loaded struct {
 	Store     draft.Store
 	Calendar  calendar.Day
 	Skipped   []derive.Meeting // meetings the user skipped, left out of Day
+	Before    derive.Day       // the day up to the latest watermark: what was sent, as derived now
 	Retags    []evidence.Retag // the retags applied, in the order made
 }
 
@@ -144,11 +162,11 @@ type Draft struct {
 }
 
 // load reads, derives and decides the day date ("" for today).
-func (r *run) load(date string) (Loaded, error) { return r.loadAs(date, nil, true) }
+func (r *run) load(date string) (Loaded, error) { return r.loadAs(date, nil, fetchNow) }
 
-// loadAs is load with day's edit to the retags. Unless wait, a calendar
-// not yet downloaded is left Pending.
-func (r *run) loadAs(date string, edit func([]evidence.Retag) []evidence.Retag, wait bool) (Loaded, error) {
+// loadAs is load with day's edit to the retags, getting its calendar as
+// how says.
+func (r *run) loadAs(date string, edit func([]evidence.Retag) []evidence.Retag, how fetching) (Loaded, error) {
 	var l Loaded
 	cfg, err := r.config()
 	if err != nil {
@@ -175,13 +193,13 @@ func (r *run) loadAs(date string, edit func([]evidence.Retag) []evidence.Retag, 
 	if err != nil {
 		return l, err
 	}
-	set := derive.Settings{IdleGap: cfg.IdleGap, Tail: derive.Defaults.Tail, EventsWin: cfg.EventsWin, Agent: derive.AgentMode(cfg.AgentTime), Until: r.Now()}
+	set := derive.Settings{IdleGap: cfg.IdleGap, Tail: derive.Defaults.Tail, EventsWin: cfg.EventsWin, Agent: derive.AgentMode(cfg.AgentTime), Until: r.Now(), Since: l.Decisions.Through()}
 	for _, b := range l.Decisions.Blocks {
 		set.Blocks = append(set.Blocks, derive.Block{From: b.From, To: b.To, Ticket: b.Ticket})
 	}
 	var all, meetings []derive.Meeting
-	if l.Decisions.Confirmed == nil && r.withCalendar {
-		l.Calendar = r.meetings(cfg, start, wait)
+	if r.withCalendar {
+		l.Calendar = r.meetings(cfg, start, how)
 		for _, m := range l.Calendar.Meetings {
 			all = append(all, derive.Meeting{ID: meetingID(m), From: m.From, To: m.To, Title: m.Title})
 		}
@@ -197,6 +215,12 @@ func (r *run) loadAs(date string, edit func([]evidence.Retag) []evidence.Retag, 
 		}
 	}
 	l.Day = derive.For(start, in, meetings, set)
+	var ok bool
+	if l.Before, ok = l.Decisions.SentDay(start); !ok && !set.Since.IsZero() {
+		// an older sift kept no record of what it sent: derive it
+		set.Since, set.Until = time.Time{}, minTime(set.Until, set.Since.Add(-time.Nanosecond))
+		l.Before = derive.For(start, in, meetings, set)
+	}
 	return l, nil
 }
 
@@ -236,6 +260,12 @@ func writeDraft(w io.Writer, d Draft, loc *time.Location, md bool) {
 	un := d.Unassigned.Meetings + d.Unassigned.Gaps + d.Unassigned.Ticketless
 	if md {
 		fmt.Fprintf(w, "# Draft · %s\n\n| Ticket | Time | From |\n| --- | ---: | ---: |\n", day.Format("Mon 2 Jan 2006"))
+		for _, wl := range d.Sent {
+			fmt.Fprintf(w, "| %s (sent) | %s | %s |\n", wl.Ticket, dur(wl.Minutes), clock(wl.Started))
+		}
+		if len(d.Sent) > 0 {
+			fmt.Fprintf(w, "| **Sent through %s** | **%s** | |\n", clock(d.Through), dur(d.SentTotal))
+		}
 		for _, wl := range d.Worklogs {
 			fmt.Fprintf(w, "| %s | %s | %s |\n", wl.Ticket, dur(wl.Minutes), clock(wl.Started))
 		}
@@ -243,8 +273,15 @@ func writeDraft(w io.Writer, d Draft, loc *time.Location, md bool) {
 			dur(d.Total), dur(un), dur(d.Unassigned.Meetings), dur(d.Unassigned.Gaps), dur(d.Unassigned.Ticketless))
 		return
 	}
-	fmt.Fprintf(w, "%s · draft\n\n", day.Format("Mon 2 Jan"))
-	if len(d.Worklogs) == 0 {
+	fmt.Fprintf(w, "%s · %s\n\n", day.Format("Mon 2 Jan"), d.State)
+	if len(d.Sent) > 0 {
+		fmt.Fprintf(w, "  sent through %s %8s\n", clock(d.Through), dur(d.SentTotal))
+		for _, wl := range d.Sent {
+			fmt.Fprintf(w, "    %-10s %8s\n", wl.Ticket, dur(wl.Minutes))
+		}
+		fmt.Fprintln(w)
+	}
+	if len(d.Worklogs) == 0 && len(d.Sent) == 0 {
 		fmt.Fprintln(w, "  No counted time.")
 	}
 	for _, wl := range d.Worklogs {

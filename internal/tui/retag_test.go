@@ -177,9 +177,9 @@ func TestUndoTakesBackOnlyTheLatestOfAChain(t *testing.T) {
 
 func TestRetagRefusesWhatItCannotMove(t *testing.T) {
 	f := conversations()
-	f.dec["2026-11-10"] = draft.Decisions{Confirmed: &draft.Confirmed{Worklogs: []draft.Worklog{{Ticket: "PUN-142", Minutes: 60, Started: hm(9, 0)}}}}
-	if m := press(New(f, day0, ""), "r"); m.msg != "Confirmed days do not change." || m.mode != nil {
-		t.Fatalf("confirmed day: msg %q mode %T", m.msg, m.mode)
+	f.dec["2026-11-10"] = draft.Decisions{Sent: []draft.Send{{Through: day0.AddDate(0, 0, 1), Worklogs: []draft.Worklog{{Ticket: "PUN-142", Minutes: 60, Raw: 60, Started: hm(9, 0)}}}}}
+	if m := press(New(f, day0, ""), "r"); !strings.Contains(m.msg, "Change it in Jira") || m.mode != nil {
+		t.Fatalf("sent day: msg %q mode %T", m.msg, m.mode)
 	}
 	m := New(newFake(), day0, "")
 	if m = press(m, "r"); !strings.Contains(m.msg, "no conversation id") || m.mode != nil {

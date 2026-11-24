@@ -101,13 +101,13 @@ func (s source) Recent(day time.Time) []string {
 }
 
 func (s source) loadAs(day time.Time, edit func([]evidence.Retag) []evidence.Retag) (tui.Input, error) {
-	l, err := s.r.loadAs(day.Format("2006-01-02"), edit, false)
+	l, err := s.r.loadAs(day.Format("2006-01-02"), edit, fetchLater)
 	if err != nil {
 		return tui.Input{}, err
 	}
 	now := s.r.Now()
 	in := tui.Input{Start: l.Start, Events: l.Events, Day: l.Day, Decisions: l.Decisions,
-		Round: l.Config.Round, IdleGap: l.Config.IdleGap, Meetings: s.note(l), Pending: l.Calendar.Source == calendar.Pending, Skipped: l.Skipped,
+		Round: l.Config.Round, IdleGap: l.Config.IdleGap, Meetings: s.note(l), Pending: l.Calendar.Source == calendar.Pending, Skipped: l.Skipped, Before: l.Before,
 		Today: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()), Tracker: s.Tracker(), Now: now}
 	sessions := map[string]bool{}
 	for _, e := range l.Events {
@@ -118,13 +118,17 @@ func (s source) loadAs(day time.Time, edit func([]evidence.Retag) []evidence.Ret
 			in.Retags = append(in.Retags, rt)
 		}
 	}
-	if l.Decisions.Confirmed != nil {
+	if len(l.Decisions.Sent) > 0 {
 		if store, err := s.r.worklogs(); err == nil {
 			key := l.Start.Format("2006-01-02")
 			if ws, err := store.List(key, key); err == nil {
 				in.Sent = map[string]tui.Status{}
+				// a ticket sent in parts shows its least settled part
+				rank := map[string]int{"failed": 3, "pending": 2}
 				for _, w := range ws {
-					in.Sent[w.Ticket] = tui.Status{State: string(w.State), Error: w.Error}
+					if old, ok := in.Sent[w.Ticket]; !ok || rank[string(w.State)] > rank[old.State] {
+						in.Sent[w.Ticket] = tui.Status{State: string(w.State), Error: w.Error}
+					}
 				}
 			}
 		}
@@ -150,13 +154,16 @@ func (s source) Update(day time.Time, change func(*draft.Decisions) error) error
 
 func (s source) Confirm(day time.Time) (string, error) {
 	c, err := s.r.confirmDay(day.Format("2006-01-02"))
-	total := 0
-	for _, w := range c.Worklogs {
-		total += w.Minutes
+	through := "through " + c.Through.In(day.Location()).Format("15:04")
+	if !c.Through.Before(day.AddDate(0, 0, 1)) {
+		through = "for the rest of the day"
 	}
-	msg := fmt.Sprintf("Confirmed: %s, %s.", plural(len(c.Worklogs), "worklog"), dur(total))
-	if c.Sent > 0 {
-		msg = fmt.Sprintf("Confirmed: %s sent, %s.", plural(c.Sent, "worklog"), dur(total))
+	msg := fmt.Sprintf("Sent %s %s.", dur(c.Minutes), through)
+	if s.Tracker() != "Jira" {
+		msg = fmt.Sprintf("Logged %s locally %s.", dur(c.Minutes), through)
+	}
+	if c.Already {
+		msg = "Nothing new to send."
 	}
 	if err != nil {
 		return msg + " " + err.Error() + ".", nil
@@ -172,7 +179,9 @@ func (s source) Tracker() string {
 	return "the local log"
 }
 
-// waiting lists the days before today with evidence that are not confirmed.
+// waiting lists the days before today with evidence and something to
+// send: never sent, or sent with time ready since. A day sent in part
+// waits until what came after its last send is sent too.
 func (r *run) waiting() ([]string, error) {
 	dir, err := r.dataDir()
 	if err != nil {
@@ -190,9 +199,21 @@ func (r *run) waiting() ([]string, error) {
 	}
 	seen := map[string]bool{}
 	for _, e := range events {
-		d := e.At.In(now.Location()).Format("2006-01-02")
-		if !days[d] {
-			seen[d] = true
+		seen[e.At.In(now.Location()).Format("2006-01-02")] = true
+	}
+	for d := range seen {
+		dec, ok := days[d]
+		if !ok || len(dec.Sent) == 0 {
+			continue
+		}
+		day, _ := time.ParseInLocation("2006-01-02", d, now.Location())
+		if !dec.Through().Before(day.AddDate(0, 0, 1)) {
+			delete(seen, d)
+			continue
+		}
+		l, err := r.loadAs(d, nil, fetchNever)
+		if err != nil || len(draft.Of(l.Day, l.Decisions, l.Config.Round).Sendable()) == 0 {
+			delete(seen, d)
 		}
 	}
 	var out []string

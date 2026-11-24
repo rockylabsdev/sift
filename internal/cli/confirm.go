@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -49,45 +50,86 @@ func (r *run) worklogs() (worklog.Store, error) {
 // Confirmation is what confirm reports.
 type Confirmation struct {
 	Date      string            `json:"date"`
-	Worklogs  []worklog.Worklog `json:"worklogs"`
+	Worklogs  []worklog.Worklog `json:"worklogs"` // the day's, every part
 	Sent      int               `json:"sent"`
 	Remaining []worklog.Worklog `json:"remaining"`
-	Already   bool              `json:"already,omitempty"`
+	Already   bool              `json:"already,omitempty"` // nothing new since the last send
+	Minutes   int               `json:"minutes"`           // what this confirm sent
+	Through   time.Time         `json:"through,omitzero"`  // the watermark it sent through
 }
 
-// confirmDay accepts date's draft: one worklog per ticket of at least a
-// minute, the day frozen as confirmed, then a send. It is safe to repeat.
+// confirmDay sends what date has ready since its last send, one worklog
+// per ticket of at least a minute, as the day's next part, and sets the
+// watermark: time before it is sent and stays as it was. Later work builds
+// a new draft. It is safe to repeat: with nothing new it sends nothing.
+//
+// The send is recorded first, under the day's lock, and only if the day
+// is still as this confirm read it; otherwise it reads the day again. The
+// outbox is then written from the records, every part of the day, so a
+// confirm that died after recording is finished by the next one, and two
+// confirms never give one part different worklogs.
 func (r *run) confirmDay(date string) (Confirmation, error) {
-	l, err := r.load(date)
-	if err != nil {
-		return Confirmation{}, err
+	var l Loaded
+	var c Confirmation
+	for try := 0; ; try++ {
+		var err error
+		if l, err = r.load(date); err != nil {
+			return Confirmation{}, err
+		}
+		c = Confirmation{Date: l.Start.Format("2006-01-02")}
+		dr := draft.Of(l.Day, l.Decisions, l.Config.Round)
+		ready := dr.Sendable()
+		if len(ready) == 0 {
+			c.Already, c.Through = true, dr.Through
+			break
+		}
+		now := r.Now()
+		// the draft counts the minute now is in, so the watermark is the next
+		c.Through = minTime(now.Truncate(time.Minute).Add(time.Minute), l.Start.AddDate(0, 0, 1))
+		for _, w := range ready {
+			c.Minutes += w.Minutes
+		}
+		send := draft.Send{At: now.UTC().Truncate(time.Second), Through: c.Through, Worklogs: dr.Tally(),
+			Runs: nonNil(l.Day.Runs), Stretches: nonNil(l.Day.Stretches)}
+		_, err = l.Store.Update(c.Date, func(d *draft.Decisions) error {
+			// compared as saved: decoded times carry their own zones
+			was, _ := json.Marshal(l.Decisions)
+			if is, _ := json.Marshal(*d); !bytes.Equal(was, is) {
+				return errDayChanged
+			}
+			d.Sent = append(d.Sent, send)
+			d.Adjust = nil // what it changed was sent
+			return nil
+		})
+		if errors.Is(err, errDayChanged) && try < 3 {
+			continue
+		}
+		if err != nil {
+			return c, err
+		}
+		break
 	}
-	key := l.Start.Format("2006-01-02")
-	c := Confirmation{Date: key}
-	dr := draft.Of(l.Day, l.Decisions, l.Config.Round)
-	client, none, cerr := r.client(l.Config)
 	store, err := r.worklogs()
 	if err != nil {
 		return c, err
 	}
-	if dr.Confirmed {
-		c.Already = true
-	} else {
+	dec, err := l.Store.Load(c.Date)
+	if err != nil {
+		return c, err
+	}
+	client, none, cerr := r.client(l.Config)
+	for part, s := range dec.Sent {
 		var ws []worklog.Worklog
-		for _, w := range dr.Sendable() {
-			ws = append(ws, worklog.Worklog{Date: key, Ticket: w.Ticket, Started: w.Started, Minutes: w.Minutes})
+		for _, w := range s.Worklogs {
+			if w.Minutes >= 1 {
+				ws = append(ws, worklog.Worklog{Date: c.Date, Ticket: w.Ticket, Started: w.Started, Minutes: w.Minutes})
+			}
 		}
-		if _, err := store.Confirm(key, ws, none); err != nil {
-			return c, err
-		}
-		if _, err := l.Store.Update(key, func(d *draft.Decisions) error {
-			d.Confirmed = &draft.Confirmed{At: r.Now().UTC().Truncate(time.Second), Worklogs: dr.Sendable()}
-			return nil
-		}); err != nil && !errors.Is(err, draft.ErrConfirmed) {
+		if _, err := store.Confirm(c.Date, part, ws, none); err != nil {
 			return c, err
 		}
 	}
-	c.Worklogs, err = store.List(key, key)
+	c.Worklogs, err = store.List(c.Date, c.Date)
 	if err != nil {
 		return c, err
 	}
@@ -96,9 +138,12 @@ func (r *run) confirmDay(date string) (Confirmation, error) {
 	if serr != nil {
 		return c, serr
 	}
-	c.Worklogs, err = store.List(key, key)
+	c.Worklogs, err = store.List(c.Date, c.Date)
 	return c, err
 }
+
+// errDayChanged: the day changed between reading it and recording a send.
+var errDayChanged = errors.New("the day changed while it was being confirmed; confirm again")
 
 // send syncs the outbox and turns what is left into an exit code.
 func (r *run) send(store worklog.Store, client tracker.Client, none bool, cerr error) (worklog.Report, error) {
@@ -152,11 +197,18 @@ func writeConfirmation(w io.Writer, c Confirmation) {
 	for _, x := range c.Worklogs {
 		total += x.Minutes
 	}
-	verb := "Confirmed"
-	if c.Already {
-		verb = "Already confirmed"
+	switch {
+	case c.Already && len(c.Worklogs) == 0:
+		fmt.Fprintf(w, "Nothing to send on %s.\n", c.Date)
+	case c.Already:
+		fmt.Fprintf(w, "Nothing new to send on %s since %s. Sent so far: %s, %s.\n", c.Date, c.Through.Local().Format("15:04"), plural(len(c.Worklogs), "worklog"), dur(total))
+	default:
+		through := "through " + c.Through.Local().Format("15:04")
+		if c.Through.Local().Format("2006-01-02") != c.Date {
+			through = "to the end of the day"
+		}
+		fmt.Fprintf(w, "Sent %s of %s %s. The day so far: %s, %s.\n", dur(c.Minutes), c.Date, through, plural(len(c.Worklogs), "worklog"), dur(total))
 	}
-	fmt.Fprintf(w, "%s %s: %s, %s.\n", verb, c.Date, plural(len(c.Worklogs), "worklog"), dur(total))
 	for _, x := range c.Worklogs {
 		fmt.Fprintf(w, "  %-10s %8s  %s\n", x.Ticket, dur(x.Minutes), x.State)
 	}
@@ -334,4 +386,11 @@ func (r *run) log(args []string) (any, func(io.Writer), error) {
 		}
 		fmt.Fprintf(w, "%-10s  %-10s %8s\n", "total", "", dur(total))
 	}, nil
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
 }
