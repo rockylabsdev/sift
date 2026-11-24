@@ -203,7 +203,11 @@ func writeConfirmation(w io.Writer, c Confirmation) {
 	case c.Already:
 		fmt.Fprintf(w, "Nothing new to send on %s since %s. Sent so far: %s, %s.\n", c.Date, c.Through.Local().Format("15:04"), plural(len(c.Worklogs), "worklog"), dur(total))
 	default:
-		fmt.Fprintf(w, "Sent %s of %s through %s. The day so far: %s, %s.\n", dur(c.Minutes), c.Date, c.Through.Local().Format("15:04"), plural(len(c.Worklogs), "worklog"), dur(total))
+		through := "through " + c.Through.Local().Format("15:04")
+		if c.Through.Local().Format("2006-01-02") != c.Date {
+			through = "to the end of the day"
+		}
+		fmt.Fprintf(w, "Sent %s of %s %s. The day so far: %s, %s.\n", dur(c.Minutes), c.Date, through, plural(len(c.Worklogs), "worklog"), dur(total))
 	}
 	for _, x := range c.Worklogs {
 		fmt.Fprintf(w, "  %-10s %8s  %s\n", x.Ticket, dur(x.Minutes), x.State)
