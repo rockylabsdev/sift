@@ -154,6 +154,9 @@ func rowsOf(in Input) []row {
 		out = append(out, row{Stretch: s})
 	}
 	for _, mt := range in.Skipped {
+		if !mt.To.After(in.Decisions.Through()) && !in.Decisions.Through().IsZero() {
+			continue // wholly sent: it is part of the sent row
+		}
 		out = append(out, row{Stretch: derive.Stretch{From: mt.From, To: mt.To, Kind: derive.InMeet, Meeting: mt.Title, MeetingID: mt.ID}, skipped: true})
 	}
 	slices.SortStableFunc(out, func(a, b row) int {

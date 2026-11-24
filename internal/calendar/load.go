@@ -86,6 +86,21 @@ func Load(ctx context.Context, client *http.Client, dataDir, address, owner stri
 	return DayOf(dataDir, f, err, day, rule)
 }
 
+// Saved is day as the last download saved it, without the network: Cached,
+// or None when nothing was saved.
+func Saved(dataDir string, day time.Time) Day {
+	var d Day
+	b, err := os.ReadFile(filepath.Join(dataDir, "calendar", day.Format("2006-01-02")+".json"))
+	if err == nil {
+		err = json.Unmarshal(b, &d)
+	}
+	if err != nil {
+		return Day{Source: None}
+	}
+	d.Source = Cached
+	return d
+}
+
 func fallback(cache, why string, loc *time.Location) Day {
 	var d Day
 	b, err := os.ReadFile(cache)

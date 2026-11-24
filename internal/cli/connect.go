@@ -70,10 +70,18 @@ type download struct {
 	at   time.Time // when sift tried
 }
 
+// fetching is how loading a day gets its calendar.
+type fetching int
+
+const (
+	fetchNow   fetching = iota // download the feed if this run has none yet
+	fetchLater                 // leave it Pending: the review's Refresh fetches it off its UI goroutine
+	fetchNever                 // read the day the last download saved: the status hook stays quick
+)
+
 // meetings is day's calendar, read from this run's one download of the
-// feed. Unless wait, it does not download: before the first download
-// ends, the day's calendar is Pending, and Refresh fetches it.
-func (r *run) meetings(cfg Config, start time.Time, wait bool) calendar.Day {
+// feed, as how says.
+func (r *run) meetings(cfg Config, start time.Time, how fetching) calendar.Day {
 	k := start.Format("2006-01-02")
 	r.calMu.Lock()
 	d, ok := r.calendars[k]
@@ -82,7 +90,13 @@ func (r *run) meetings(cfg Config, start time.Time, wait bool) calendar.Day {
 	switch {
 	case ok:
 		return d
-	case dl == nil && !wait:
+	case dl == nil && how == fetchNever:
+		dir, err := r.dataDir()
+		if err != nil {
+			return calendar.Day{Source: calendar.None}
+		}
+		return calendar.Saved(dir, start)
+	case dl == nil && how == fetchLater:
 		return calendar.Day{Source: calendar.Pending}
 	case dl == nil:
 		dl = r.download(cfg, func(*download) bool { return false })

@@ -39,6 +39,24 @@ type Send struct {
 	At       time.Time `json:"at"`
 	Through  time.Time `json:"through"`
 	Worklogs []Worklog `json:"worklogs"` // every ticket it covered, those that rounded to nothing too
+	// Runs and Stretches are the time it sent as it was derived then, so
+	// sent time keeps showing what was sent whatever changes after.
+	Runs      []derive.Run     `json:"runs,omitempty"`
+	Stretches []derive.Stretch `json:"stretches,omitempty"`
+}
+
+// SentDay is the sent time as each send recorded it. ok is false when a
+// send has no record, as a day confirmed by an older sift has none.
+func (d Decisions) SentDay(start time.Time) (day derive.Day, ok bool) {
+	day = derive.Day{Start: start, End: start.AddDate(0, 0, 1)}
+	for _, s := range d.Sent {
+		if s.Stretches == nil {
+			return derive.Day{}, false
+		}
+		day.Runs = append(day.Runs, s.Runs...)
+		day.Stretches = append(day.Stretches, s.Stretches...)
+	}
+	return day, len(d.Sent) > 0
 }
 
 // Through is the latest watermark: everything before it is sent. Zero

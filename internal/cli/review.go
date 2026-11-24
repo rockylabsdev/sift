@@ -101,7 +101,7 @@ func (s source) Recent(day time.Time) []string {
 }
 
 func (s source) loadAs(day time.Time, edit func([]evidence.Retag) []evidence.Retag) (tui.Input, error) {
-	l, err := s.r.loadAs(day.Format("2006-01-02"), edit, false)
+	l, err := s.r.loadAs(day.Format("2006-01-02"), edit, fetchLater)
 	if err != nil {
 		return tui.Input{}, err
 	}
@@ -211,8 +211,7 @@ func (r *run) waiting() ([]string, error) {
 			delete(seen, d)
 			continue
 		}
-		// no calendar download here: the status hook must stay quick
-		l, err := r.loadAs(d, nil, false)
+		l, err := r.loadAs(d, nil, fetchNever)
 		if err != nil || len(draft.Of(l.Day, l.Decisions, l.Config.Round).Sendable()) == 0 {
 			delete(seen, d)
 		}

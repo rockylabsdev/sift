@@ -162,11 +162,11 @@ type Draft struct {
 }
 
 // load reads, derives and decides the day date ("" for today).
-func (r *run) load(date string) (Loaded, error) { return r.loadAs(date, nil, true) }
+func (r *run) load(date string) (Loaded, error) { return r.loadAs(date, nil, fetchNow) }
 
-// loadAs is load with day's edit to the retags. Unless wait, a calendar
-// not yet downloaded is left Pending.
-func (r *run) loadAs(date string, edit func([]evidence.Retag) []evidence.Retag, wait bool) (Loaded, error) {
+// loadAs is load with day's edit to the retags, getting its calendar as
+// how says.
+func (r *run) loadAs(date string, edit func([]evidence.Retag) []evidence.Retag, how fetching) (Loaded, error) {
 	var l Loaded
 	cfg, err := r.config()
 	if err != nil {
@@ -199,7 +199,7 @@ func (r *run) loadAs(date string, edit func([]evidence.Retag) []evidence.Retag, 
 	}
 	var all, meetings []derive.Meeting
 	if r.withCalendar {
-		l.Calendar = r.meetings(cfg, start, wait)
+		l.Calendar = r.meetings(cfg, start, how)
 		for _, m := range l.Calendar.Meetings {
 			all = append(all, derive.Meeting{ID: meetingID(m), From: m.From, To: m.To, Title: m.Title})
 		}
@@ -215,8 +215,10 @@ func (r *run) loadAs(date string, edit func([]evidence.Retag) []evidence.Retag, 
 		}
 	}
 	l.Day = derive.For(start, in, meetings, set)
-	if t := set.Since; !t.IsZero() {
-		set.Since, set.Until = time.Time{}, minTime(set.Until, t.Add(-time.Nanosecond))
+	var ok bool
+	if l.Before, ok = l.Decisions.SentDay(start); !ok && !set.Since.IsZero() {
+		// an older sift kept no record of what it sent: derive it
+		set.Since, set.Until = time.Time{}, minTime(set.Until, set.Since.Add(-time.Nanosecond))
 		l.Before = derive.For(start, in, meetings, set)
 	}
 	return l, nil

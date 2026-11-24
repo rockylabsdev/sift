@@ -49,6 +49,7 @@ func (s Store) Load(date string) (Decisions, error) {
 			c.Worklogs[i].Raw = c.Worklogs[i].Minutes
 		}
 		dec.Sent = []Send{{At: c.At, Through: day.AddDate(0, 0, 1), Worklogs: c.Worklogs}}
+		dec.Adjust = nil // an older sift kept it, and it is in what was sent
 	}
 	dec.Confirmed = nil
 	return dec, nil
